@@ -5,8 +5,8 @@
 //
 // cava reports each band's level from 0 to 1 at a fixed gain (cava.conf),
 // and how loud speech gets on that scale depends on the microphone, its
-// gain and the room: soft speech into a laptop microphone peaks at a few
-// hundredths. So every band keeps two running estimates:
+// gain and the room: at cava.conf's gain, soft speech into a laptop
+// microphone peaks at a few tenths and normal speech at about half. So every band keeps two running estimates:
 //
 //   noise  the room's floor in that band: it falls quickly to anything
 //          quieter, and creeps up slowly and only a little at a time, so
@@ -43,7 +43,7 @@ var NOISE_MAX = 0.05;
 // Reference attack, in time constants a second, and release, as the share
 // it loses a second.
 var ATTACK = 20;
-var RELEASE = 0.08;
+var RELEASE = 0.4;
 // Noise floor fall rate and its slower rise, a second, and how far above
 // itself one rise step may aim.
 var NOISE_FALL = 2;
@@ -57,7 +57,7 @@ var GLOBAL_SHARE = 0.25;
 // curve below), leaving room above it.
 var HEADROOM = 1.3;
 // Exponent of the curve from scale to height: below 1 lifts quiet levels.
-var CURVE = 0.7;
+var CURVE = 0.5;
 
 function clamp(v, lo, hi) {
     return Math.max(lo, Math.min(hi, v));
