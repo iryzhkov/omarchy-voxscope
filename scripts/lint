@@ -17,7 +17,7 @@
 # `omarchy plugin validate`, which mirrors what the shell's plugin registry
 # accepts.
 #
-# Usage: scripts/lint [file ...]     (default: every tracked QML file)
+# Usage: scripts/lint [file ...]     (default: every QML file in the tree)
 
 set -uo pipefail
 
@@ -39,14 +39,26 @@ if [[ -z $qmllint ]]; then
   exit 2
 fi
 
+# Files are found by globbing the working tree, not by asking git, so a copy
+# without .git (a job host's snapshot, an unpacked archive) is checked just
+# the same instead of silently checking nothing. Each pattern is a glob
+# relative to the project directory; ** spans directories, and hidden ones
+# such as .git are skipped.
 list_files() {
-  git ls-files -- "$@" 2>/dev/null || true
+  local pattern path
+  shopt -s globstar nullglob
+  for pattern in "$@"; do
+    for path in $pattern; do
+      [[ -f $path ]] && printf '%s\n' "$path"
+    done
+  done
+  shopt -u globstar nullglob
 }
 
 if (($# > 0)); then
   files=("$@")
 else
-  mapfile -t files < <(list_files '*.qml')
+  mapfile -t files < <(list_files '**/*.qml')
 fi
 
 status=0
@@ -79,7 +91,10 @@ if ((${#files[@]} > 0)); then
     fi
   fi
 else
-  echo "lint: no QML files to check" >&2
+  # This plugin is QML; finding none means the search is broken, and a
+  # clean verdict would be a lie.
+  echo "lint: no QML files found" >&2
+  status=1
 fi
 
 # Shell scripts ship with the plugin or drive its tests; a syntax error in

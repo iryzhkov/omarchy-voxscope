@@ -1,0 +1,12 @@
+# Python bytecode, left beside a script whenever it is imported.
+__pycache__/
+*.py[co]
+
+# Artifacts that Chaldea jobs return to the working tree.
+/.chaldea/
+
+# Caches of qmllint and the QML engine.
+.qmlls.ini
+.qmlcache/
+*.qmlc
+*.jsc
