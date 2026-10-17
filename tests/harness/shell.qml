@@ -5,7 +5,9 @@
 // the scratch runtime directory: it writes Voxtype's state file and
 // postprocess.json at set times, feeds the HUD a fake audio bridge, grabs
 // frames of the card, and logs the HUD's state every 50 ms (TRACE lines),
-// what it saved (FRAME) and what it checked (CHECK, FAIL).
+// the window mapping and unmapping (WINDOW), the audio bridge and cava
+// being allowed to run or not (LIVE), the window being held (HOLD), what it saved (FRAME) and what it
+// checked (CHECK, FAIL).
 
 import QtQuick
 import Quickshell
@@ -35,6 +37,12 @@ ShellRoot {
     property bool sawLive: false
     property int unmaps: 0
     property real mappedAt: 0
+    // Whether the window was held for a settling dictation, and whether it
+    // was then still mapped with nothing new drawn and no audio running.
+    property bool sawHolding: false
+    property bool heldCleanly: false
+    // Frames saved so far, which numbers their files.
+    property int grabs: 0
     // Whether the stop command is expected to have run by the "stopped"
     // check.
     property bool expectStopped: true
@@ -75,7 +83,8 @@ ShellRoot {
             [6000, "quit", ""]
         ],
         // Recording again during the linger: the HUD starts over in the
-        // same window, which must not unmap in between.
+        // same window, which must not unmap in between, and keeps the
+        // linger's last frame while the new dictation settles.
         relinger: [
             [0, "state", "recording"],
             [2500, "state", "transcribing"],
@@ -85,7 +94,8 @@ ShellRoot {
             [4550, "state", "idle"],
             [4600, "grab", "lingering"],
             [4650, "state", "recording"],
-            [4750, "check", "rerecord"],
+            [4850, "check", "holding"],
+            [4850, "check", "rerecord"],
             [5000, "grab", "rerecord"],
             [6500, "state", "transcribing"],
             [6700, "pp", "start"],
@@ -126,6 +136,44 @@ ShellRoot {
             [8300, "pp", "done-raw"],
             [8600, "state", "idle"],
             [11500, "quit", ""]
+        ],
+        // A `--no-osd` recording started during an ordinary dictation's
+        // linger, its marker 30 ms after the state: the window, held for the
+        // settling, hides without ever drawing REC or running the bridge.
+        suppressedrelinger: [
+            [0, "state", "recording"],
+            [1000, "state", "transcribing"],
+            [1150, "pp", "start-long"],
+            [1200, "pp", "done-long"],
+            [1300, "state", "idle"],
+            [1320, "clear", ""],
+            [1350, "state", "recording"],
+            [1380, "marker", "on"],
+            [1600, "check", "never-shown"],
+            [1600, "check", "hidden-now"],
+            [1800, "state", "transcribing"],
+            [2100, "state", "idle"],
+            [2120, "marker", "off"],
+            [2400, "check", "never-shown"],
+            [2500, "quit", ""]
+        ],
+        // An ordinary recording seen before the previous `--no-osd`
+        // dictation's marker is seen gone; the marker goes during the
+        // settling, so the new dictation shows.
+        oldmarker: [
+            [0, "state", "recording"],
+            [30, "marker", "on"],
+            [800, "state", "transcribing"],
+            [1000, "state", "idle"],
+            [1020, "check", "never-shown"],
+            [1040, "state", "recording"],
+            [1070, "marker", "off"],
+            [1500, "check", "shown"],
+            [1500, "check", "unsuppressed"],
+            [1550, "grab", "unsuppressed"],
+            [1800, "state", "transcribing"],
+            [2100, "state", "idle"],
+            [4500, "quit", ""]
         ],
         // A marker that arrives well into a shown recording hides the HUD
         // and stops the bridge and cava (`live`); the dictation stays hidden
@@ -225,7 +273,25 @@ ShellRoot {
                         harness.scenario === "silence" ? "silent"
                         : harness.scenario === "nobridge" ? "stall" : "speech"]
         onShownChanged: if (shown) harness.sawShown = true
-        onLiveChanged: if (live) harness.sawLive = true
+        // Whether the hold is clean is looked at once the handler that began
+        // it has finished. In "relinger" a frame of the held window is saved
+        // then, which must be the previous dictation's last frame, not REC;
+        // elsewhere grabbing would stall the event loop and delay the steps
+        // that follow.
+        onHoldingChanged: {
+            if (holding) {
+                harness.sawHolding = true;
+                Qt.callLater(function() {
+                    harness.heldCleanly = hud.holding && hud.windowShown && !hud.shown && !hud.live;
+                    if (harness.scenario === "relinger") harness.grab(hud.windowItem, "held");
+                });
+            }
+            console.log("HOLD " + (holding ? "started" : "ended") + " at " + (Date.now() - harness.t0) + " ms");
+        }
+        onLiveChanged: {
+            if (live) harness.sawLive = true;
+            console.log("LIVE " + (live ? "started" : "stopped") + " at " + (Date.now() - harness.t0) + " ms");
+        }
         onWindowShownChanged: {
             const e = Date.now() - harness.t0;
             if (windowShown) {
@@ -297,6 +363,17 @@ ShellRoot {
         return out;
     }
 
+    // Saves a frame of `item`: the card, or what the window shows of it,
+    // which differs while the window is held.
+    function grab(item, label) {
+        const name = out + "/" + String(grabs++).padStart(2, "0") + "-" + label + ".png";
+        const e = Date.now() - t0;
+        item.grabToImage(function(r) {
+            r.saveToFile(name);
+            console.log("FRAME " + name + " at " + e + " ms, stage " + hud.stage);
+        });
+    }
+
     function report(stage, fields) {
         for (const k in fields) status[k] = fields[k];
         const obj = { stage: stage, t: Date.now() };
@@ -335,16 +412,11 @@ ShellRoot {
                 report("done", { cleaned: false, reason: "disabled", words: lens.length, model: null, lens: lens });
             }
         } else if (action === "grab") {
-            const name = out + "/" + String(next).padStart(2, "0") + "-" + arg + ".png";
-            const e = now - t0;
-            hud.cardItem.grabToImage(function(r) {
-                r.saveToFile(name);
-                console.log("FRAME " + name + " at " + e + " ms, stage " + hud.stage);
-            });
+            grab(hud.cardItem, arg);
         } else if (action === "check") {
             check(arg);
         } else if (action === "quit") {
-            if (!hiddenLogged && hud.shown) console.log("FAIL the HUD was still shown at the end");
+            if (!hiddenLogged && hud.windowShown) console.log("FAIL the HUD was still shown at the end");
             Qt.quit();
         }
     }
@@ -355,6 +427,16 @@ ShellRoot {
             console.log((ok ? "CHECK" : "FAIL") + " recording during the linger reset the HUD: stage "
                 + hud.stage + ", lingering " + hud.lingering + ", shown " + hud.shown
                 + ", tape " + hud.tape.length + " columns");
+        } else if (what === "holding") {
+            const ok = sawHolding && heldCleanly && unmaps === 0;
+            console.log((ok ? "CHECK" : "FAIL") + " window held while the re-record settled: held "
+                + sawHolding + ", mapped with nothing drawn or live " + heldCleanly
+                + ", unmaps " + unmaps);
+        } else if (what === "unsuppressed") {
+            const ok = !hud.suppressed && !hud.markerPresent && hud.live;
+            console.log((ok ? "CHECK" : "FAIL") + " marker removed during the settling left the"
+                + " dictation unsuppressed: suppressed " + hud.suppressed + ", marker "
+                + hud.markerPresent + ", live " + hud.live);
         } else if (what === "stopped") {
             stoppedFile.path = harness.runtime + "/stopped";
         } else if (what === "not-stopped") {
@@ -413,13 +495,13 @@ ShellRoot {
             }
             if (hud.lingering && harness.lingerStartedAt === null) harness.lingerStartedAt = hud.idleAt;
             if (hud.shown && !hud.lingering) harness.lingerStartedAt = null;
-            if (harness.idleWrittenAt !== null && !hud.shown && !harness.hiddenLogged) {
+            if (harness.idleWrittenAt !== null && !hud.windowShown && !harness.hiddenLogged) {
                 harness.hiddenLogged = true;
                 const since = harness.lingerStartedAt !== null
                     ? ", " + (now - harness.lingerStartedAt) + " ms after the HUD saw idle" : ", no linger";
                 console.log("CHECK hidden " + (now - harness.idleWrittenAt) + " ms after idle was written" + since);
             }
-            if (harness.idleWrittenAt !== null && hud.shown) harness.hiddenLogged = false;
+            if (harness.idleWrittenAt !== null && hud.windowShown) harness.hiddenLogged = false;
         }
     }
 
