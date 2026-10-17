@@ -54,8 +54,9 @@
 //
 // Spectrum. Voxtype's audio bridge only carries peak and RMS, so the
 // spectrum comes from cava reading the default PipeWire source while
-// recording, at fixed gain and normalised here. If cava is missing or
-// silent, the bars are synthesised from the bridge's RMS instead.
+// recording, at fixed gain and normalised here per band to how loud speech
+// has recently been (spectrum.js). If cava is missing or silent, the bars
+// are synthesised from the bridge's RMS instead.
 
 import QtQuick
 import Quickshell
@@ -64,6 +65,7 @@ import Quickshell.Wayland
 import Quickshell.Hyprland
 import "timing.js" as Timing
 import "postprocess.js" as Postprocess
+import "spectrum.js" as Spectrum
 
 Item {
     id: root
@@ -230,11 +232,11 @@ Item {
     // Spectrum state, 0..1 per band.
     property var target: []
     property real lastCavaMs: 0
-    // Per-band calibration: ref tracks how loud each band gets in speech
-    // (fast attack, release of about 1 % a second), noise tracks the room
-    // floor (falls fast, creeps up slowly). Both persist in calibration.json
-    // between dictations, so the meter settles to this mic and room over
-    // time instead of starting from scratch each recording.
+    // Per-band calibration (spectrum.js): ref tracks how loud each band
+    // gets in speech, noise the room's floor. Both persist in
+    // calibration.json between dictations, so the meter starts from this
+    // mic and room, with the reference capped at the start of each
+    // recording so a loud session cannot flatten a quiet one.
     property var bandRef: []
     property var bandNoise: []
     property bool calibrationLoaded: false
@@ -428,6 +430,9 @@ Item {
             peak = [];
             peakAge = [];
             energy = 0;
+            const seeded = Spectrum.seed({ ref: bandRef, noise: bandNoise }, bands);
+            bandRef = seeded.ref;
+            bandNoise = seeded.noise;
             voiceUntil = 0;
             clipUntil = 0;
             lastBridgeMs = 0;
@@ -536,15 +541,8 @@ Item {
 
     function targetFor(i, t) {
         if (now - lastCavaMs < 400 && target.length > 0) {
-            const idx = Math.floor(i * target.length / bands);
-            const v = target[idx] || 0;
-            const floor = (bandNoise[i] || 0) * 1.5;
-            let globalRef = 0;
-            for (let k = 0; k < bandRef.length; k++) globalRef = Math.max(globalRef, bandRef[k]);
-            // Quiet bands are not stretched all the way: their reference is
-            // at least a quarter of the loudest band's, so hiss stays low.
-            const ref = Math.max(bandRef[i] || 0.08, globalRef * 0.25, floor * 2, 0.02);
-            return Math.pow(clamp((v - floor) / (ref - floor), 0, 1), 0.7);
+            const v = target[Math.floor(i * target.length / bands)] || 0;
+            return Spectrum.level(v, bandRef[i], bandNoise[i], Spectrum.loudest(bandRef));
         }
         // Fallback: a speech-shaped envelope driven by the bridge RMS.
         const rms = audio.rms;
@@ -554,17 +552,13 @@ Item {
     }
 
     function calibrate(dt) {
-        const ref = bandRef.length === bands ? bandRef.slice() : new Array(bands).fill(0.08);
-        const noise = bandNoise.length === bands ? bandNoise.slice() : new Array(bands).fill(0.005);
-        for (let i = 0; i < bands; i++) {
-            const v = target[Math.floor(i * target.length / bands)] || 0;
-            ref[i] = v > ref[i] ? ref[i] + (v - ref[i]) * Math.min(1, 3 * dt)
-                                : Math.max(0.02, ref[i] - ref[i] * 0.01 * dt);
-            noise[i] = v < noise[i] ? noise[i] + (v - noise[i]) * Math.min(1, 2 * dt)
-                                    : noise[i] + (v - noise[i]) * 0.02 * dt;
-        }
-        bandRef = ref;
-        bandNoise = noise;
+        const start = bandRef.length === bands && bandNoise.length === bands
+            ? { ref: bandRef, noise: bandNoise } : Spectrum.seed(null, bands);
+        const values = new Array(bands);
+        for (let i = 0; i < bands; i++) values[i] = target[Math.floor(i * target.length / bands)] || 0;
+        const next = Spectrum.calibrate(start.ref, start.noise, values, dt);
+        bandRef = next.ref;
+        bandNoise = next.noise;
     }
 
     function tick() {
@@ -673,13 +667,11 @@ Item {
             try {
                 const raw = text();
                 const c = raw.length <= 16384 ? JSON.parse(raw) : null;
-                const ok = function(a) {
-                    return Array.isArray(a) && a.length === root.bands
-                        && a.every(function(v) { return typeof v === "number" && v >= 0 && v <= 1; });
-                };
-                if (c && ok(c.ref) && ok(c.noise)) {
-                    root.bandRef = c.ref;
-                    root.bandNoise = c.noise;
+                // Every value is clamped, and malformed ones defaulted.
+                if (c && typeof c === "object") {
+                    const seeded = Spectrum.seed(c, root.bands);
+                    root.bandRef = seeded.ref;
+                    root.bandNoise = seeded.noise;
                 }
             } catch (e) {}
             root.calibrationLoaded = true;

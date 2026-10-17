@@ -132,6 +132,13 @@ default source with `pactl` (from `libpulse`), writes a cava config for it to
 or without `pactl`, the bars are synthesised from the bridge's RMS level
 instead, and nothing else changes. The plugin never installs anything.
 
+cava runs at a fixed gain, and Voxscope scales each band to how loud your
+speech has been in it lately, so soft and loud speech both fill a good part
+of the height without loud speech sitting at the top, while the room's hiss
+stays at the resting centre cell. Each recording starts from what the last
+one learned, capped so that soft speech moves at once; the first syllable
+of loud speech may briefly reach the top while it catches up.
+
 ### Optional: the post-process script
 
 Voxtype reports one `transcribing` state for both speech to text and its
@@ -196,8 +203,8 @@ you.
 Voxscope keeps what it learns in `$XDG_STATE_HOME/voxscope/`
 (`~/.local/state/voxscope/`), created on first start: `timing.json` holds the
 learned speeds of speech to text, the LLM and typing, and `calibration.json`
-the spectrum's per-band levels for your microphone and room. Deleting them
-starts the learning over. Nothing is ever written to the plugin's own
+the spectrum's per-band levels for your microphone and room (`spectrum.js`
+describes them). Deleting them starts the learning over. Nothing is ever written to the plugin's own
 directory.
 
 ## Development
@@ -205,7 +212,10 @@ directory.
 `tests/harness/run.sh <scenario>` runs the HUD in a standalone Quickshell
 against a scratch directory under `~/.cache/voxscope-test/`, plays a scripted
 dictation into it and saves frames of the card; see the script for the
-scenarios. `timing.js` holds the timing model as pure functions.
+scenarios, among them `quiet` and `loud`, which feed the spectrum from a fake
+cava. `tests/harness/sheet.sh <dir>` makes a contact sheet of the pipeline
+across stock themes and settings. `timing.js` holds the timing model and
+`spectrum.js` the spectrum's calibration, both as pure functions.
 
 ## Credits
 
