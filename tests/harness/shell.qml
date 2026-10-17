@@ -528,7 +528,8 @@ ShellRoot {
             console.log("TRACE " + (Date.now() - harness.t0) + " state=" + hud.daemonState
                 + " stage=" + hud.stage + " p1=" + hud.scanP1.toFixed(3) + " p2=" + hud.scanP2.toFixed(3)
                 + " typing=" + hud.typingProgress().toFixed(3) + " lingering=" + hud.lingering
-                + " shown=" + hud.shown + " window=" + hud.windowShown);
+                + " shown=" + hud.shown + " window=" + hud.windowShown
+                + " opacity=" + hud.windowItem.opacity.toFixed(2) + " scale=" + hud.windowItem.scale.toFixed(3));
         }
     }
 }

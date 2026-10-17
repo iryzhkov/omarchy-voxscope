@@ -26,6 +26,11 @@
 // Recording again meanwhile starts over in the same window, which keeps the
 // linger's last frame while the new dictation settles (see `holding`).
 //
+// Transitions. The card fades and scales in as the window appears, and
+// fades out over its last frame when a dictation ends, the window staying
+// mapped until it has (see `fading`). A dictation that turns out to be
+// suppressed, or a stale state, hides it at once instead.
+//
 // Suppression. A dictation started with `voxtype record start --no-osd` is
 // never shown, not even during the linger, although Voxtype removes its
 // marker when it goes idle; see `suppressed`. Voxtype creates the marker
@@ -144,6 +149,11 @@ Item {
     // re-record neither unmaps it nor draws REC before the marker could
     // have appeared. A marker that appears meanwhile clears it at once.
     property bool holding: false
+    // Set while the card fades out after the dictation ended; the window
+    // stays mapped, showing the last frame, until the fade has finished.
+    property bool fading: false
+    readonly property int appearMs: 120
+    readonly property int fadeMs: 180
     // Set when Voxtype has stayed recording or transcribing for longer than
     // it could; cleared by the next state change.
     property bool stalled: false
@@ -252,18 +262,50 @@ Item {
         return screens.length > 0 ? screens[0] : null;
     }
 
-    // The window follows `shown`, or `holding`, but only after its screen
-    // is set, so it never maps on the wrong output first.
+    // The window follows `shown`, `holding` or `fading`, but only after its
+    // screen is set, so it never maps on the wrong output first.
     function updateWindow() {
-        const want = shown || holding;
+        const want = shown || holding || fading;
         if (want === windowShown) return;
         if (want) targetScreen = focusedScreen();
         windowShown = want;
     }
 
     onShownChanged: {
-        if (!shown) endLinger();
+        if (!shown) {
+            endLinger();
+            // An ordinary end fades out; a suppressed or stale dictation,
+            // or one held for the next, does not.
+            fading = windowShown && !holding && !suppressed && !stalled;
+        } else {
+            fading = false;
+        }
         updateWindow();
+    }
+
+    onFadingChanged: {
+        if (fading) {
+            appear.stop();
+            disappear.restart();
+        } else if (disappear.running) {
+            // Shown again before the fade finished: back to full.
+            disappear.stop();
+            appear.restart();
+        }
+    }
+
+    function fadeDone() {
+        if (!fading) return;
+        fading = false;
+        updateWindow();
+    }
+
+    onWindowShownChanged: {
+        if (!windowShown) return;
+        disappear.stop();
+        heldFrame.opacity = 0;
+        heldFrame.scale = 0.96;
+        appear.restart();
     }
 
     onHoldingChanged: updateWindow()
@@ -805,16 +847,45 @@ Item {
         }
 
         // The card is drawn through this texture, which stops updating while
-        // the window is held, so the window keeps the previous dictation's
-        // last frame although the card's bindings already follow the new
-        // one.
+        // the window is held or fading, so the window keeps the previous
+        // dictation's last frame although the card's bindings already
+        // follow the new one.
         ShaderEffectSource {
             id: heldFrame
             anchors.fill: card
             sourceItem: card
             hideSource: true
-            live: !root.holding
+            live: !root.holding && !root.fading
+            opacity: 0
         }
+    }
+
+    ParallelAnimation {
+        id: appear
+        NumberAnimation {
+            target: heldFrame
+            property: "opacity"
+            to: 1
+            duration: root.appearMs
+            easing.type: Easing.OutCubic
+        }
+        NumberAnimation {
+            target: heldFrame
+            property: "scale"
+            to: 1
+            duration: root.appearMs
+            easing.type: Easing.OutCubic
+        }
+    }
+
+    NumberAnimation {
+        id: disappear
+        target: heldFrame
+        property: "opacity"
+        to: 0
+        duration: root.fadeMs
+        easing.type: Easing.InQuad
+        onFinished: root.fadeDone()
     }
 
     // The card, and what the window shows of it, for a test harness to

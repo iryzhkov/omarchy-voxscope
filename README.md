@@ -27,7 +27,8 @@ Neither speech to text nor the LLM reports progress, so each scan runs for an
 estimated time that Voxscope learns from the dictations you make, and the
 typing animation is paced to end when Voxtype's real typing does. When Voxtype
 goes idle the card stays a moment longer to finish its animation, never more
-than a second and a half.
+than a second and a half, then fades out. It fades and scales in when it
+appears.
 
 The card takes the colours of the active Omarchy theme from its
 `colors.toml`: everything is drawn in the theme's accent, warnings in its
