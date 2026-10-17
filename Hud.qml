@@ -204,7 +204,9 @@ Item {
     // Silence auto-stop, for recordings started by a toggle wrapper that
     // stamps $XDG_RUNTIME_DIR/voxtype/toggle-start (push-to-talk is ended by
     // releasing the key). After silenceStopSecs without voice the HUD stops
-    // the recording itself, counting down for the last five.
+    // the recording itself, counting down for the last five. Voice is the
+    // bridge's vad flag; silence is counted only while bridge frames are
+    // arriving, so a missing or restarting bridge never stops a recording.
     readonly property real silenceStopSecs: 10
     property real toggleStamp: 0
     readonly property bool toggleMode: toggleStamp > 0 && Math.abs(toggleStamp - stateSince) < 3000
@@ -466,6 +468,9 @@ Item {
         }
 
         if (recording && now - lastCavaMs < 400 && target.length > 0) calibrate(dt);
+        // Silence counts only while the bridge is delivering frames: without
+        // them there is no telling silence from speech.
+        if (recording && t - lastBridgeMs >= 1000) lastVoiceMs = t;
         if (stage === 0 && toggleMode && !autoStopSent && silentFor >= silenceStopSecs) {
             autoStopSent = true;
             stopper.running = true;

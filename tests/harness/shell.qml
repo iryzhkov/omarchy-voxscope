@@ -142,6 +142,20 @@ ShellRoot {
             [2700, "check", "never-shown"],
             [3000, "quit", ""]
         ],
+        // A toggled recording whose audio bridge sends three seconds of
+        // silence and then stops sending: the silence auto-stop must not
+        // fire, because without frames there is no telling silence from
+        // speech.
+        nobridge: [
+            [0, "toggle", ""],
+            [20, "state", "recording"],
+            [2000, "grab", "bridge-silent"],
+            [9000, "grab", "bridge-gone"],
+            [9000, "check", "no-countdown"],
+            [12500, "check", "not-stopped"],
+            [12600, "state", "idle"],
+            [13500, "quit", ""]
+        ],
         // Voxtype dies while recording and leaves its state file behind;
         // with a one-second cap the HUD gives up 31 s in.
         stale: [
@@ -206,7 +220,8 @@ ShellRoot {
     Hud {
         id: hud
         bridgeCommand: ["/usr/bin/python3", "-I", harness.bridge,
-                        harness.scenario === "silence" ? "silent" : "speech"]
+                        harness.scenario === "silence" ? "silent"
+                        : harness.scenario === "nobridge" ? "stall" : "speech"]
         onShownChanged: if (shown) harness.sawShown = true
         onLiveChanged: if (live) harness.sawLive = true
         onWindowShownChanged: {
@@ -340,7 +355,14 @@ ShellRoot {
                 + ", tape " + hud.tape.length + " columns");
         } else if (what === "stopped") {
             stoppedFile.path = harness.runtime + "/stopped";
-
+        } else if (what === "not-stopped") {
+            expectStopped = false;
+            stoppedFile.path = harness.runtime + "/stopped";
+        } else if (what === "no-countdown") {
+            const ok = hud.shown && !hud.silenceWarning && hud.silentFor < 2;
+            console.log((ok ? "CHECK" : "FAIL") + " no silence countdown without bridge frames: silent for "
+                + hud.silentFor.toFixed(1) + " s, warning " + hud.silenceWarning
+                + ", last bridge frame " + (Date.now() - hud.lastBridgeMs) + " ms ago");
         } else if (what === "never-shown") {
             const ok = !sawShown && !sawLive && !hud.lingering;
             console.log((ok ? "CHECK" : "FAIL") + " suppressed dictation stayed hidden: shown seen "

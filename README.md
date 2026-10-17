@@ -147,6 +147,17 @@ fi
 exec voxtype record toggle
 ```
 
+"Voice" here is the `vad` flag of Voxtype's audio bridge. In Voxtype 1.0.1
+the bridge computes it itself, as the frame's peak level being above
+-40 dBFS (`src/bin/voxtype_audio_bridge.rs`); it does not come from
+Voxtype's own voice activity detection, so it is set whether or not the
+`[vad]` section of Voxtype's configuration is enabled. It is a loudness
+threshold rather than speech detection, so a noisy room can keep a
+recording from stopping, but never stops one early. Silence is counted only
+while bridge frames are arriving: if the bridge is missing, has not
+connected or is restarting, no countdown runs and the recording is left to
+you.
+
 ## Files
 
 Voxscope keeps what it learns in `$XDG_STATE_HOME/voxscope/`

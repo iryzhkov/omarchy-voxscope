@@ -3,7 +3,9 @@
 
 Prints the bridge's NDJSON frames at 100 Hz: in "speech" mode an RMS level
 that rises and falls like words, with voice activity while it is loud, and
-in "silent" mode a quiet room with no voice at all.
+in "silent" mode a quiet room with no voice at all, and in "stall" mode
+three seconds of that quiet room and then nothing, like a bridge that has
+lost the daemon's socket.
 """
 
 import json
@@ -18,7 +20,10 @@ def main() -> None:
     start = time.monotonic()
     while True:
         t = time.monotonic() - start
-        if mode == "silent":
+        if mode == "stall" and t >= 3:
+            time.sleep(1)
+            continue
+        if mode in ("silent", "stall"):
             rms = 0.004 + 0.002 * math.sin(t * 7)
         else:
             words = max(0.0, math.sin(t * 5.3)) * max(0.0, math.sin(t * 1.1 + 0.4))

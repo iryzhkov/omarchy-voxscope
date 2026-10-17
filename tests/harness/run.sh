@@ -10,7 +10,7 @@
 # touched; Voxtype itself is never contacted.
 #
 # Scenarios (see shell.qml): pipeline, fastidle, relinger, noscript,
-# silence, cap, cava, suppressed, latemarker, stale, latedir.
+# silence, cap, cava, suppressed, latemarker, nobridge, stale, latedir.
 # "cava" points PipeWire and Pulse at the real session so cava can listen
 # to the default microphone. "stale" takes about 35 s.
 #
@@ -24,9 +24,9 @@ set -euo pipefail
 
 scenario=${1:-}
 case $scenario in
-  pipeline | fastidle | relinger | noscript | silence | cap | cava | suppressed | latemarker | stale | latedir) ;;
+  pipeline | fastidle | relinger | noscript | silence | cap | cava | suppressed | latemarker | nobridge | stale | latedir) ;;
   *)
-    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava|suppressed|latemarker|stale|latedir" >&2
+    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava|suppressed|latemarker|nobridge|stale|latedir" >&2
     exit 2
     ;;
 esac
