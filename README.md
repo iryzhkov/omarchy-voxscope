@@ -55,8 +55,6 @@ empties the cells of the stepper's line after REC in the theme's red.
 
 ## Install
 
-Once the repository is published:
-
 ```
 omarchy plugin add https://github.com/iryzhkov/omarchy-voxscope.git --enable
 ```
@@ -82,6 +80,20 @@ the old version stays on screen until the shell restarts:
 ```
 omarchy restart shell
 ```
+
+### Removing
+
+```
+omarchy plugin remove io.github.iryzhkov.voxscope
+omarchy restart shell
+```
+
+Then turn Voxtype's own OSD back on (`voxtype config set osd.enabled true`,
+see below) and restart Voxtype. Voxscope's learned timing and microphone
+calibration stay in `~/.local/state/voxscope/`; delete that directory to
+remove them too. Its other files live in `$XDG_RUNTIME_DIR/voxscope/` and
+go away with the session. If you installed the example post-process script,
+remove it and the `[output.post_process]` entry that points to it.
 
 ### Settings
 
