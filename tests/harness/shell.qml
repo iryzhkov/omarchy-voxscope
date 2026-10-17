@@ -44,7 +44,9 @@ ShellRoot {
         pipeline: [
             [0, "state", "recording"],
             [1500, "grab", "rec"],
+            [2400, "grab", "rec-late"],
             [2500, "state", "transcribing"],
+            [2560, "grab", "collapse"],
             [2690, "pp", "start"],
             [2700, "grab", "stt"],
             [2730, "pp", "llm"],

@@ -1,7 +1,8 @@
 // The Voxscope card: everything the HUD draws, read off `hud` (Hud.qml).
 //
 // Each stage of the dictation pipeline has its own visualisation:
-//   REC  a mirrored live spectrum of the mic, with held peaks; meanwhile the
+//   REC  a mirrored live spectrum of the mic in the same square cells as
+//        the STT scan, with held peaks as brighter cells; meanwhile the
 //        loudness is recorded as a timeline, one column per 100 ms
 //   STT  the whole recording's timeline, drawn as a soft analog envelope,
 //        with a scan line sweeping across it; behind the line the columns
@@ -241,34 +242,53 @@ Item {
                     + Math.round(c.b * 255) + "," + (a === undefined ? 1 : a) + ")";
             }
 
+            // The cell grid shared by the live spectrum and the scans:
+            // square cells cellW wide and cell tall, colPitch and pitch
+            // apart, mirrored about the midline.
+            readonly property int cellW: 5
+            readonly property int colPitch: cellW + 2
+            readonly property int cell: 6
+            readonly property int pitch: cell + 2
+
+            function rowsFor(h) {
+                return Math.max(1, Math.floor((h / 2 - 2) / pitch));
+            }
+
+            // Row j of a column at x, above and below the midline cy.
+            function fillCellPair(ctx, x, wd, cy, j) {
+                const off = j * pitch + pitch / 2;
+                ctx.fillRect(x, cy - off - cell, wd, cell);
+                ctx.fillRect(x, cy + off, wd, cell);
+            }
+
+            // Recording: the live spectrum in the scans' cells. Each band is
+            // a column two cells wide, lit to its level, with its held peak
+            // as one brighter cell at the top and bottom.
             function drawSpectrum(ctx, w, h) {
                 const hud = card.hud;
                 const n = hud.bands;
-                const gap = 4;
-                const bw = (w - gap * (n - 1)) / n;
+                const sub = 2;
+                const bandW = sub * colPitch - 2;
+                const bandGap = Math.max(colPitch - cellW, Math.floor((w - n * bandW) / Math.max(1, n - 1)));
+                const left = Math.floor((w - (n * bandW + (n - 1) * bandGap)) / 2);
                 const cy = h / 2;
-                const half = h / 2 - 3;
+                const rows = rowsFor(h);
 
                 ctx.fillStyle = css(card.cDim);
                 ctx.fillRect(0, Math.round(cy), w, 1);
 
-                const grad = ctx.createLinearGradient(0, cy - half, 0, cy + half);
-                grad.addColorStop(0, css(card.cMid));
-                grad.addColorStop(0.35, css(card.cAccent));
-                grad.addColorStop(0.5, css(card.cHot));
-                grad.addColorStop(0.65, css(card.cAccent));
-                grad.addColorStop(1, css(card.cMid));
-
                 for (let i = 0; i < n; i++) {
-                    const x = i * (bw + gap);
-                    const amp = Math.max(1, (hud.level[i] || 0) * half);
-                    ctx.fillStyle = grad;
-                    ctx.fillRect(x, cy - amp, bw, amp * 2);
+                    const x = left + i * (bandW + bandGap);
+                    const count = Math.max(1, Math.min(rows, Math.round((hud.level[i] || 0) * rows)));
                     const pk = hud.peak[i] || 0;
-                    if (pk > 0.03) {
-                        ctx.fillStyle = css(card.cHot);
-                        ctx.fillRect(x, cy - pk * half - 3, bw, 2);
-                        ctx.fillRect(x, cy + pk * half + 1, bw, 2);
+                    // A peak in the first row would only light the resting
+                    // cell, so it is not shown.
+                    const pkRow = Math.min(rows, Math.round(pk * rows)) - 1;
+                    for (let j = 0; j < Math.max(count, pkRow + 1); j++) {
+                        if (j === pkRow && j > 0) ctx.fillStyle = css(card.cHot);
+                        else if (j < count) ctx.fillStyle = css(card.cAccent, 0.85);
+                        else continue;
+                        for (let k = 0; k < sub; k++) fillCellPair(ctx, x + k * colPitch, cellW, cy, j);
                     }
                 }
             }
@@ -327,13 +347,9 @@ Item {
             // length of the transcript's words.
             function drawScan(ctx, w, h, t) {
                 const hud = card.hud;
-                const cellW = 5;
-                const colPitch = cellW + 2;
                 const n = Math.max(1, Math.floor((w + 2) / colPitch));
-                const cell = 6;
-                const pitch = cell + 2;
                 const cy = h / 2;
-                const rows = Math.max(1, Math.floor((h / 2 - 2) / pitch));
+                const rows = rowsFor(h);
                 const half = h / 2 - 3;
                 const env = envelope(n);
                 const grow = Math.min(1, (t - hud.workSince) / 220);
@@ -385,11 +401,7 @@ Item {
                     const near = (x1 - x) / colPitch < 3 && card.stage === 1;
                     ctx.fillStyle = behind2 ? css(card.cAccent, 0.16)
                         : near ? css(card.cHot) : css(card.cAccent, 0.85);
-                    for (let j = 0; j < count; j++) {
-                        const off = j * pitch + pitch / 2;
-                        ctx.fillRect(x, cy - off - cell, cellW, cell);
-                        ctx.fillRect(x, cy + off, cellW, cell);
-                    }
+                    for (let j = 0; j < count; j++) fillCellPair(ctx, x, cellW, cy, j);
                 }
 
                 // Word blocks, left of the LLM line.
