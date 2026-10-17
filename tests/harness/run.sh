@@ -119,7 +119,7 @@ env "${audio_env[@]}" XDG_RUNTIME_DIR="$run/runtime" WAYLAND_DISPLAY="$wayland" 
   XDG_STATE_HOME="$run/state" XDG_CONFIG_HOME="$run/config" \
   HARNESS_SCENARIO="$scenario" HARNESS_OUT="$run/frames" \
   HARNESS_BRIDGE="$here/fake-bridge.py" HARNESS_SETTINGS="${VOXSCOPE_SETTINGS:-}" \
-  HARNESS_CAVA="$scenario" HARNESS_FAKE_CAVA="$here/fake-cava.py" \
+  HARNESS_FAKE_CAVA="$here/fake-cava.py" \
   timeout 40 quickshell -p "$run/app/shell.qml" >"$run/log.txt" 2>&1 || status=$?
 
 echo "$scenario: exit $status, output in $run"

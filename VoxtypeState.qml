@@ -2,15 +2,22 @@
 //
 // Adapted from voxtype-shared/StateReader.qml in Voxtype
 // (https://github.com/peteonrails/voxtype), MIT licence, copyright (c) 2025
-// Peter Jackson. Changes: the paths come from the caller, the file is
-// read with a size bound, an unknown state reads as idle, an empty read
-// is ignored, and a missing directory is waited for.
+// Peter Jackson. Changes: the paths come from the caller, both files are
+// read through bounded helpers (Bounded.qml) instead of being loaded, an
+// unknown state reads as idle, an empty read is ignored, and a missing
+// directory is waited for.
+//
+// The FileViews only watch; they never load. Each change starts a read
+// through Helper.read, which opens the file once, refuses anything but a
+// regular file of this user's reached without a symlink, and passes at
+// most a few dozen bytes; the state file holds one word and the marker
+// "1".
 //
 // A FileView watch notices a file being created only when its directory
 // already exists (checked with Quickshell 0.3.2). Voxtype creates its
 // runtime directory when it starts, which can be after the shell, so
 // while the state file cannot be read both files are re-armed every two
-// seconds; once the state file loads, the watches take over.
+// seconds; once the state file reads, the watches take over.
 //
 // The daemon rewrites $XDG_RUNTIME_DIR/voxtype/state on every transition;
 // it holds exactly one of idle, recording, streaming and transcribing. A
@@ -22,8 +29,9 @@
 // remembers the marker for the whole dictation.
 
 import QtQuick
-import Quickshell
 import Quickshell.Io
+import "Helper.js" as Helper
+import "Sanitize.js" as Sanitize
 
 // QtObject rather than Item, so `state` does not collide with Item's own
 // property of that name.
@@ -40,7 +48,10 @@ QtObject {
     // True while the in-flight recording asked for no OSD.
     property bool osdSuppressed: false
 
-    readonly property var knownStates: ["idle", "recording", "streaming", "transcribing"]
+    // Byte caps on the two reads: the state is one short word, the marker
+    // "1".
+    readonly property int maxStateBytes: 64
+    readonly property int maxMarkerBytes: 64
 
     // Whether the state file could be read last time; while it cannot,
     // the poll below re-arms the watches.
@@ -48,26 +59,47 @@ QtObject {
     // Cleared and set again to re-arm both FileViews.
     property bool _armed: true
 
-    property FileView _stateFile: FileView {
-        path: root.directory !== "" && root._armed ? root.directory + "/state" : ""
+    readonly property string _statePath: directory !== "" && _armed ? directory + "/state" : ""
+    readonly property string _markerPath: directory !== "" && _armed ? directory + "/osd_suppressed" : ""
+
+    property FileView _stateWatch: FileView {
+        path: root._statePath
+        preload: false
         watchChanges: true
         printErrors: false
+        onFileChanged: root._stateRead.start()
+        onPathChanged: if (path !== "") root._stateRead.start()
+    }
 
-        onLoaded: {
+    property Bounded _stateRead: Bounded {
+        build: function() {
+            return root._statePath !== ""
+                ? Helper.read(root._statePath, { maxBytes: root.maxStateBytes }) : null;
+        }
+        onSucceeded: function(text) {
+            const wasReadable = root._readable;
             root._readable = true;
-            const raw = text();
-            const next = raw.length <= 64 ? raw.trim() : "";
+            // Re-arm once more, so the watches are certainly placed with
+            // the directory in existence.
+            if (!wasReadable) {
+                root._armed = false;
+                root._armed = true;
+            }
             // An empty read is most likely the file caught mid-write, not
             // a state; the write that follows will be seen.
-            if (next === "") return;
-            const known = root.knownStates.indexOf(next) >= 0 ? next : "idle";
-            if (known !== root.state) root.state = known;
+            const next = Sanitize.daemonState(text);
+            if (next !== "" && next !== root.state) root.state = next;
         }
-        onLoadFailed: {
+        onFailed: function(exitCode) {
+            // An oversized file is there but holds no state; it is ignored
+            // as an empty read is.
+            if (exitCode === Helper.OVERFLOW_EXIT) {
+                root._readable = true;
+                return;
+            }
             root._readable = false;
             if (root.state !== "idle") root.state = "idle";
         }
-        onFileChanged: reload()
     }
 
     property Timer _rearm: Timer {
@@ -80,19 +112,29 @@ QtObject {
         }
     }
 
-    // The marker is created and removed rather than rewritten, so both the
-    // load and the failure carry meaning: present means suppress.
-    property FileView _suppressedFile: FileView {
-        path: root.directory !== "" && root._armed ? root.directory + "/osd_suppressed" : ""
+    // The marker is created and removed rather than rewritten, so both a
+    // read and a failure carry meaning: present means suppress. An
+    // oversized marker is still present.
+    property FileView _markerWatch: FileView {
+        path: root._markerPath
+        preload: false
         watchChanges: true
         printErrors: false
+        onFileChanged: root._markerRead.start()
+        onPathChanged: if (path !== "") root._markerRead.start()
+    }
 
-        onLoaded: {
+    property Bounded _markerRead: Bounded {
+        build: function() {
+            return root._markerPath !== ""
+                ? Helper.read(root._markerPath, { maxBytes: root.maxMarkerBytes }) : null;
+        }
+        onSucceeded: {
             if (!root.osdSuppressed) root.osdSuppressed = true;
         }
-        onLoadFailed: {
-            if (root.osdSuppressed) root.osdSuppressed = false;
+        onFailed: function(exitCode) {
+            const present = exitCode === Helper.OVERFLOW_EXIT;
+            if (root.osdSuppressed !== present) root.osdSuppressed = present;
         }
-        onFileChanged: reload()
     }
 }

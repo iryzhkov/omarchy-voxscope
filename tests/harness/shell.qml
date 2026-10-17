@@ -375,9 +375,10 @@ ShellRoot {
     Hud {
         id: hud
         shell: harness.fakeShell
-        bridgeCommand: ["/usr/bin/python3", "-I", harness.bridge,
-                        harness.scenario === "silence" || harness.fakeCava ? "silent"
-                        : harness.scenario === "nobridge" ? "stall" : "speech"]
+        bridgeExecutable: "/usr/bin/python3"
+        bridgeArgs: ["-I", harness.bridge,
+                     harness.scenario === "silence" || harness.fakeCava ? "silent"
+                     : harness.scenario === "nobridge" ? "stall" : "speech"]
         onShownChanged: if (shown) harness.sawShown = true
         // Whether the hold is clean is looked at once the handler that began
         // it has finished. In "relinger" a frame of the held window is saved
@@ -433,7 +434,10 @@ ShellRoot {
         stopCommand: ["/usr/bin/touch", harness.runtime + "/stopped"]
         sourceCommand: harness.scenario === "cava" ? ["/usr/bin/pactl", "get-default-source"]
             : harness.fakeCava ? ["/usr/bin/echo", "harness.fake.source"] : ["/usr/bin/false"]
-        cavaExecutable: harness.fakeCava ? Quickshell.env("HARNESS_FAKE_CAVA") : "/usr/bin/cava"
+        // The HUD clears the environment of everything it runs, so the fake
+        // is told its level as an argument.
+        cavaExecutable: harness.fakeCava ? "/usr/bin/python3" : "/usr/bin/cava"
+        cavaArgs: harness.fakeCava ? ["-I", Quickshell.env("HARNESS_FAKE_CAVA"), harness.scenario] : []
     }
 
     FileView {

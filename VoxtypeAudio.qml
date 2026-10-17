@@ -3,7 +3,9 @@
 // Adapted from voxtype-shared/AudioBridge.qml in Voxtype
 // (https://github.com/peteonrails/voxtype), MIT licence, copyright (c) 2025
 // Peter Jackson. Changes: the bridge runs only while `active`, from a
-// fixed path, and lines are length-bounded and their numbers clamped.
+// fixed path through Helper.stream (env -i, a deadline, and TERM if the
+// shell dies), and lines are length-bounded and their numbers clamped
+// (Sanitize.bridgeLine).
 //
 // voxtype-audio-bridge reads the daemon's audio socket
 // ($XDG_RUNTIME_DIR/voxtype/audio.sock) and prints one JSON object per
@@ -16,8 +18,9 @@
 // It carries only peak and RMS, no spectrum.
 
 import QtQuick
-import Quickshell
 import Quickshell.Io
+import "Helper.js" as Helper
+import "Sanitize.js" as Sanitize
 
 Item {
     id: root
@@ -25,8 +28,14 @@ Item {
     // Run the bridge only while this is true.
     property bool active: false
 
-    // The bridge's command line; a test harness substitutes a fake.
-    property var command: ["/usr/bin/voxtype-audio-bridge"]
+    // The bridge, by absolute path, and its arguments; a test harness
+    // substitutes a fake.
+    property string executable: "/usr/bin/voxtype-audio-bridge"
+    property var args: []
+    // The variables it runs with (Helper.envPrefix names the ones that
+    // pass), and the longest it may run.
+    property var environment: ({})
+    property int deadlineSecs: 3600
 
     // Delay before restarting a bridge that exited while active, so a
     // crash-looping binary cannot spin the CPU.
@@ -44,45 +53,36 @@ Item {
     signal connected()
     signal disconnected()
 
-    readonly property int maxLineChars: 512
-
-    function level(v) {
-        const n = Number(v);
-        return isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
-    }
-
     function handleLine(line) {
-        const trimmed = String(line || "").trim();
-        if (trimmed.length === 0 || trimmed.length > root.maxLineChars) return;
-        let obj;
-        try {
-            obj = JSON.parse(trimmed);
-        } catch (e) {
-            return;
-        }
-        if (obj === null || typeof obj !== "object") return;
-        if (obj.status === "connected") {
+        const msg = Sanitize.bridgeLine(line);
+        if (msg === null) return;
+        if (msg.status === "connected") {
             root.connected();
             return;
         }
-        if (obj.status === "disconnected") {
+        if (msg.status === "disconnected") {
             root.running = false;
             root.disconnected();
             return;
         }
-        if (typeof obj.peak === "number" && typeof obj.rms === "number") {
-            root.peak = level(obj.peak);
-            root.rms = level(obj.rms);
-            root.vad = !!obj.vad;
-            const ts = Number(obj.ts_ms);
-            root.running = true;
-            root.frameReceived(root.peak, root.rms, root.vad, isFinite(ts) ? ts : 0);
-        }
+        root.peak = msg.peak;
+        root.rms = msg.rms;
+        root.vad = msg.vad;
+        root.running = true;
+        root.frameReceived(msg.peak, msg.rms, msg.vad, msg.tsMs);
+    }
+
+    // Starts the bridge, unless its command is not acceptable.
+    function launch() {
+        const argv = Helper.stream([root.executable].concat(root.args || []),
+                                   { seconds: root.deadlineSecs, env: root.environment });
+        if (argv === null) return;
+        bridge.command = argv;
+        bridge.running = true;
     }
 
     Process {
         id: bridge
-        command: root.command
 
         stdout: SplitParser {
             splitMarker: "\n"
@@ -103,7 +103,7 @@ Item {
         id: restartTimer
         interval: root.restartDelayMs
         onTriggered: {
-            if (root.active && !bridge.running) bridge.running = true;
+            if (root.active && !bridge.running) root.launch();
         }
     }
 
@@ -111,7 +111,7 @@ Item {
     // restart timer sets `running` too and would break a binding.
     onActiveChanged: {
         if (active) {
-            bridge.running = true;
+            launch();
             return;
         }
         restartTimer.stop();
@@ -122,6 +122,8 @@ Item {
     }
 
     Component.onCompleted: {
-        if (active) bridge.running = true;
+        if (active) launch();
     }
+
+    Component.onDestruction: bridge.running = false
 }

@@ -3,8 +3,8 @@
 
 Prints cava's raw ASCII output at 60 frames a second: 32 bars from 0 to
 1000 separated by semicolons, one frame per line, as the cava.conf template
-asks for. The arguments ("-p <config>") are ignored. HARNESS_CAVA picks
-the level:
+asks for. The first argument picks the level; the rest ("-p <config>") are
+ignored:
 
   quiet  0.6 s of room hiss (0 to 2 of 1000), then speech-shaped bands
          peaking at about 30 of 1000, like soft speech into a laptop
@@ -14,7 +14,6 @@ the level:
 """
 
 import math
-import os
 import random
 import sys
 import time
@@ -28,7 +27,7 @@ def shape(i: int) -> float:
 
 
 def main() -> None:
-    mode = os.environ.get("HARNESS_CAVA", "quiet")
+    mode = sys.argv[1] if len(sys.argv) > 1 else "quiet"
     top = 900 if mode == "loud" else 30
     rng = random.Random(7)
     start = time.monotonic()

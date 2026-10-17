@@ -59,6 +59,12 @@
 // recording, at fixed gain and normalised here per band to how loud speech
 // has recently been (spectrum.js). If cava is missing or silent, the bars
 // are synthesised from the bridge's RMS instead.
+//
+// Outside input. Every program runs from a fixed absolute path with a
+// cleared environment and a deadline (Helper.js), every file is read
+// through a bounded helper with a byte cap (Bounded.qml), and everything
+// read is clamped or whitelisted before use (Sanitize.js, postprocess.js,
+// spectrum.js). No shell command is ever built from data.
 
 import QtQuick
 import Quickshell
@@ -68,6 +74,8 @@ import Quickshell.Hyprland
 import "timing.js" as Timing
 import "postprocess.js" as Postprocess
 import "spectrum.js" as Spectrum
+import "Helper.js" as Helper
+import "Sanitize.js" as Sanitize
 
 Item {
     id: root
@@ -81,46 +89,70 @@ Item {
     // which omarchy-shell leaves alone apart from its `id`:
     //   { "id": "io.github.iryzhkov.voxscope", "compact": true,
     //     "position": "bottom", "reducedMotion": true }
-    // Each is whitelisted: anything other than the values below is the
-    // default.
-    readonly property string pluginId: manifest && typeof manifest.id === "string"
-        && /^[A-Za-z0-9_.-]{1,128}$/.test(manifest.id) ? manifest.id : "io.github.iryzhkov.voxscope"
-    readonly property var settings: {
-        const config = shell ? shell.shellConfig : null;
-        const list = config && Array.isArray(config.plugins) ? config.plugins : [];
-        for (let i = 0; i < list.length && i < 1024; i++) {
-            const entry = list[i];
-            if (entry && typeof entry === "object" && !Array.isArray(entry) && entry.id === pluginId)
-                return entry;
-        }
-        return ({});
-    }
+    // Each is whitelisted (Sanitize.settings): anything other than the
+    // values below is the default.
+    readonly property string pluginId: Sanitize.pluginId(manifest, "io.github.iryzhkov.voxscope")
+    readonly property var settings: Sanitize.settings(shell ? shell.shellConfig : null, pluginId)
     // The visualisation strip and the stepper, without title and subtitle.
-    readonly property bool compact: settings.compact === true
+    readonly property bool compact: settings.compact
     // "center" of the focused screen, or "bottom", centred above its
     // bottom edge.
-    readonly property string position: settings.position === "bottom" ? "bottom" : "center"
+    readonly property string position: settings.position
     // No bloom pulse, scanlines, blinking or scaling; plain fades only.
-    readonly property bool reducedMotion: settings.reducedMotion === true
+    readonly property bool reducedMotion: settings.reducedMotion
 
-    // External commands. A test harness substitutes harmless fakes.
-    // setpriv ties the bridge's life to the shell's, as for cava below.
-    property var bridgeCommand: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/voxtype-audio-bridge"]
+    // External programs, each an absolute path and its arguments, run
+    // through Helper.js. A test harness substitutes harmless fakes.
+    property string bridgeExecutable: "/usr/bin/voxtype-audio-bridge"
+    property var bridgeArgs: []
     property var stopCommand: ["/usr/bin/voxtype", "record", "stop"]
     property var sourceCommand: ["/usr/bin/pactl", "get-default-source"]
     property string cavaExecutable: "/usr/bin/cava"
+    // Arguments before cava's own "-p <config>".
+    property var cavaArgs: []
 
-    readonly property string home: Quickshell.env("HOME") || ""
-    readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
-    readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || home + "/.config"
+    // Directories from the environment, each an absolute path without "."
+    // or ".." components, or unset (Sanitize.directory); every path below
+    // is one of them plus a fixed name.
+    readonly property string home: Sanitize.directory(Quickshell.env("HOME"), "")
+    readonly property string runtimeDir: Sanitize.directory(Quickshell.env("XDG_RUNTIME_DIR"), "")
+    readonly property string stateHome: Sanitize.directory(Quickshell.env("XDG_STATE_HOME"),
+                                                           home !== "" ? home + "/.local/state" : "")
+    readonly property string configHome: Sanitize.directory(Quickshell.env("XDG_CONFIG_HOME"),
+                                                            home !== "" ? home + "/.config" : "")
     readonly property string voxtypeDir: runtimeDir !== "" ? runtimeDir + "/voxtype" : ""
     // Learned timing and calibration.
-    readonly property string dataDir: stateHome + "/voxscope"
+    readonly property string dataDir: stateHome !== "" ? stateHome + "/voxscope" : ""
     // The generated cava config, rewritten for every recording.
     readonly property string scratchDir: runtimeDir !== "" ? runtimeDir + "/voxscope" : dataDir
-    readonly property string cavaConfigPath: scratchDir + "/cava.conf"
+    readonly property string cavaConfigPath: scratchDir !== "" ? scratchDir + "/cava.conf" : ""
     property bool dataDirReady: false
+
+    // The only variables the programs above see, besides PATH=/usr/bin and
+    // LC_ALL=C: where home, the runtime directory and the configuration
+    // are, and where PipeWire and Pulse listen if the session moved them.
+    // Helper.envPrefix drops any that is unset or malformed.
+    readonly property var childEnvironment: ({
+        HOME: home,
+        XDG_RUNTIME_DIR: runtimeDir,
+        XDG_CONFIG_HOME: Quickshell.env("XDG_CONFIG_HOME") || "",
+        PIPEWIRE_RUNTIME_DIR: Quickshell.env("PIPEWIRE_RUNTIME_DIR") || "",
+        PULSE_SERVER: Quickshell.env("PULSE_SERVER") || ""
+    })
+    // The audio bridge and cava run only while recording, which cannot
+    // last longer than Voxtype's cap; this deadline ends them a minute
+    // after it even if nothing else does.
+    readonly property int liveDeadlineSecs: Math.round(clamp(maxRecordSecs + 60, 60, 86460))
+
+    // Byte caps on the files read; none of them is anywhere near its cap.
+    readonly property int maxToggleBytes: 32
+    readonly property int maxPostprocessBytes: Postprocess.MAX_CHARS
+    readonly property int maxTimingBytes: 4096
+    readonly property int maxCalibrationBytes: 16384
+    readonly property int maxVoxtypeConfigBytes: 262144
+    readonly property int maxThemeBytes: 65536
+    readonly property int maxTemplateBytes: 4096
+    readonly property int maxSourceBytes: 512
 
     // Theme colours; neutral defaults until colors.toml loads.
     property color themeBackground: "#0b0d12"
@@ -411,7 +443,7 @@ Item {
             typingSamplePending = true;
             lingering = true;
             // The final status may have landed since the last poll.
-            ppFile.reload();
+            ppRead.start();
         } else {
             endLinger();
         }
@@ -421,14 +453,14 @@ Item {
         if (!(wasRecording && isRecording)) stateSince = t;
         prevState = daemonState;
         if (starts) {
-            themeFile.reload();
-            voxtypeConfig.reload();
+            themeRead.start();
+            configRead.start();
         }
         if (isRecording && !wasRecording) {
             workSince = t;
             lastVoiceMs = t;
             autoStopSent = false;
-            toggleFile.reload();
+            toggleRead.start();
             target = [];
             lastCavaMs = 0;
             tape = [];
@@ -535,7 +567,10 @@ Item {
     VoxtypeAudio {
         id: audio
         active: root.live
-        command: root.bridgeCommand
+        executable: root.bridgeExecutable
+        args: root.bridgeArgs
+        environment: root.childEnvironment
+        deadlineSecs: root.liveDeadlineSecs
         onFrameReceived: function(peak, rms, vad, tsMs) {
             const t = Date.now();
             root.lastBridgeMs = t;
@@ -587,7 +622,7 @@ Item {
         if (recording && t - lastBridgeMs >= 1000) lastVoiceMs = t;
         if (stage === 0 && toggleMode && !autoStopSent && silentFor >= silenceStopSecs) {
             autoStopSent = true;
-            stopper.running = true;
+            stopper.start();
         }
 
         const lv = level.length === bands ? level.slice() : new Array(bands).fill(0);
@@ -638,124 +673,168 @@ Item {
         onTriggered: root.tick()
     }
 
-    // Creates the data and scratch directories once at startup; nothing is
-    // written until it has succeeded.
-    Process {
+    // Creates the data and scratch directories once at startup, private to
+    // this user; nothing is written until it has succeeded.
+    Bounded {
         id: makeDirs
-        command: ["/usr/bin/mkdir", "-p", "--", root.dataDir, root.scratchDir]
-        onExited: function(exitCode) { root.dataDirReady = exitCode === 0; }
+        build: function() {
+            return Helper.run(["/usr/bin/mkdir", "-p", "-m", "700", "--", root.dataDir, root.scratchDir],
+                              { seconds: 5, maxBytes: 4096 });
+        }
+        onSucceeded: root.dataDirReady = true
+        onFailed: root.dataDirReady = false
     }
 
     Component.onCompleted: {
-        if (home !== "") makeDirs.running = true;
+        if (dataDir !== "") {
+            makeDirs.start();
+            calibrationRead.start();
+            timingRead.start();
+        } else {
+            calibrationLoaded = true;
+        }
+        templateRead.start();
+        themeRead.start();
+        configRead.start();
     }
 
+    // The toggle stamp, watched and read again whenever it changes. A
+    // missing stamp leaves the last one, which is too old to count.
+    readonly property string togglePath: voxtypeDir !== "" ? voxtypeDir + "/toggle-start" : ""
+
     FileView {
-        id: toggleFile
-        path: root.voxtypeDir !== "" ? root.voxtypeDir + "/toggle-start" : ""
+        path: root.togglePath
+        preload: false
         printErrors: false
         watchChanges: true
-        onFileChanged: reload()
-        onLoaded: {
-            const raw = text();
-            const n = raw.length <= 32 ? Number(raw.trim()) : 0;
-            root.toggleStamp = isFinite(n) && n > 0 ? n : 0;
+        onFileChanged: toggleRead.start()
+    }
+
+    Bounded {
+        id: toggleRead
+        build: function() {
+            return root.togglePath !== "" ? Helper.read(root.togglePath, { maxBytes: root.maxToggleBytes }) : null;
+        }
+        onSucceeded: function(text) { root.toggleStamp = Sanitize.toggleStamp(text); }
+        onFailed: function(exitCode) {
+            if (exitCode === Helper.OVERFLOW_EXIT) root.toggleStamp = 0;
         }
     }
 
-    Process {
+    Bounded {
         id: stopper
-        command: root.stopCommand
+        build: function() {
+            return Helper.run(root.stopCommand, { seconds: 10, maxBytes: 4096, env: root.childEnvironment });
+        }
     }
+
+    // Learned calibration and timing: read once at startup, written back as
+    // they change. The writers never load anything.
+    readonly property string calibrationPath: dataDir !== "" ? dataDir + "/calibration.json" : ""
+    readonly property string timingPath: dataDir !== "" ? dataDir + "/timing.json" : ""
 
     FileView {
         id: calibrationFile
-        path: root.dataDir + "/calibration.json"
+        path: root.calibrationPath
+        preload: false
         printErrors: false
-        onLoaded: {
-            try {
-                const raw = text();
-                const c = raw.length <= 16384 ? JSON.parse(raw) : null;
-                // Every value is clamped, and malformed ones defaulted.
-                if (c && typeof c === "object") {
-                    const seeded = Spectrum.seed(c, root.bands);
-                    root.bandRef = seeded.ref;
-                    root.bandNoise = seeded.noise;
-                }
-            } catch (e) {}
+    }
+
+    Bounded {
+        id: calibrationRead
+        build: function() {
+            return root.calibrationPath !== ""
+                ? Helper.read(root.calibrationPath, { maxBytes: root.maxCalibrationBytes }) : null;
+        }
+        onSucceeded: function(text) {
+            // Every value is clamped, and malformed ones defaulted.
+            const c = Sanitize.calibration(text);
+            if (c !== null) {
+                const seeded = Spectrum.seed(c, root.bands);
+                root.bandRef = seeded.ref;
+                root.bandNoise = seeded.noise;
+            }
             root.calibrationLoaded = true;
         }
-        onLoadFailed: root.calibrationLoaded = true
+        onFailed: root.calibrationLoaded = true
     }
 
     FileView {
         id: timingFile
-        path: root.dataDir + "/timing.json"
+        path: root.timingPath
+        preload: false
         printErrors: false
-        onLoaded: {
-            try {
-                const raw = text();
-                const c = raw.length <= 4096 ? JSON.parse(raw) : null;
-                // Rates outside these bounds are not plausible measurements.
-                const ok = function(v) { return typeof v === "number" && v > 0 && v < 10; };
-                if (c && ok(c.stt)) root.sttRate = c.stt;
-                if (c && ok(c.llm)) root.llmRate = c.llm;
-                if (c && ok(c.type)) root.typeRate = c.type;
-            } catch (e) {}
+    }
+
+    Bounded {
+        id: timingRead
+        build: function() {
+            return root.timingPath !== "" ? Helper.read(root.timingPath, { maxBytes: root.maxTimingBytes }) : null;
+        }
+        onSucceeded: function(text) {
+            // Rates outside (0, 10) are not plausible measurements.
+            const rates = Sanitize.timingRates(text);
+            if (Sanitize.own(rates, "stt")) root.sttRate = rates.stt;
+            if (Sanitize.own(rates, "llm")) root.llmRate = rates.llm;
+            if (Sanitize.own(rates, "type")) root.typeRate = rates.type;
         }
     }
 
-    FileView {
-        id: voxtypeConfig
-        path: root.configHome + "/voxtype/config.toml"
-        printErrors: false
-        onLoaded: {
-            const raw = text();
-            const m = raw.length <= 262144 ? /^max_duration_secs\s*=\s*(\d+)/m.exec(raw) : null;
-            if (m) root.maxRecordSecs = root.clamp(Number(m[1]), 1, 86400);
+    // Voxtype's configuration and the theme are the user's own files and
+    // may be symlinks, as a dotfile manager makes them.
+    Bounded {
+        id: configRead
+        build: function() {
+            return root.configHome !== ""
+                ? Helper.read(root.configHome + "/voxtype/config.toml",
+                              { maxBytes: root.maxVoxtypeConfigBytes, follow: true }) : null;
+        }
+        onSucceeded: function(text) {
+            const secs = Sanitize.maxRecordSecs(text);
+            if (secs !== null) root.maxRecordSecs = secs;
         }
     }
 
-    FileView {
-        id: themeFile
-        path: root.stateHome + "/omarchy/current/theme/colors.toml"
-        printErrors: false
-        onLoaded: {
-            const t = text();
-            if (t.length > 65536) return;
-            function pick(key) {
-                const m = new RegExp("^" + key + "\\s*=\\s*\"(#[0-9a-fA-F]{6})\"", "m").exec(t);
-                return m ? m[1] : null;
-            }
-            const bg = pick("background");
-            const accent = pick("accent");
-            const fg = pick("bright_foreground") || pick("foreground");
+    Bounded {
+        id: themeRead
+        build: function() {
+            return root.stateHome !== ""
+                ? Helper.read(root.stateHome + "/omarchy/current/theme/colors.toml",
+                              { maxBytes: root.maxThemeBytes, follow: true }) : null;
+        }
+        onSucceeded: function(text) {
+            const c = Sanitize.themeColours(text);
+            const bg = c.background;
+            const accent = c.accent;
+            const fg = c.bright_foreground || c.foreground;
             if (bg && accent && fg) {
-                const mode = /^mode\s*=\s*"(light|dark)"/m.exec(t);
                 // Without a mode, a background brighter than the text
                 // makes a light theme.
-                root.themeLight = mode ? mode[1] === "light"
+                root.themeLight = c.mode ? c.mode === "light"
                     : Qt.color(bg).hslLightness > Qt.color(fg).hslLightness;
                 root.themeBackground = bg;
-                root.themeCard = pick("dark_background") || bg;
+                root.themeCard = c.dark_background || bg;
                 root.themeAccent = accent;
                 root.themeForeground = fg;
-                root.themeMuted = pick("muted") || root.mix(Qt.color(bg), Qt.color(fg), 0.45);
-                root.themeSelection = pick("selection") || root.mix(Qt.color(bg), Qt.color(accent), 0.2);
-                root.themeWarn = pick("red") || root.mix(Qt.color(accent), Qt.color("#ff3b30"), 0.7);
+                root.themeMuted = c.muted || root.mix(Qt.color(bg), Qt.color(fg), 0.45);
+                root.themeSelection = c.selection || root.mix(Qt.color(bg), Qt.color(accent), 0.2);
+                root.themeWarn = c.red || root.mix(Qt.color(accent), Qt.color("#ff3b30"), 0.7);
             }
         }
     }
 
     // Post-process status, polled while transcribing and lingering: the
     // script replaces the file by rename, which a file watch would lose
-    // track of.
-    FileView {
-        id: ppFile
-        path: root.voxtypeDir !== "" ? root.voxtypeDir + "/postprocess.json" : ""
-        printErrors: false
-        onLoaded: {
-            const next = Postprocess.parse(text());
+    // track of. A read still in flight when the next poll comes is followed
+    // by one more, not overlapped.
+    Bounded {
+        id: ppRead
+        build: function() {
+            return root.voxtypeDir !== ""
+                ? Helper.read(root.voxtypeDir + "/postprocess.json", { maxBytes: root.maxPostprocessBytes }) : null;
+        }
+        onSucceeded: function(text) {
+            const next = Postprocess.parse(text);
             if (next !== null) root.pp = next;
         }
     }
@@ -765,7 +844,7 @@ Item {
         repeat: true
         running: root.shown && (root.working || root.lingering)
         triggeredOnStart: true
-        onTriggered: ppFile.reload()
+        onTriggered: ppRead.start()
     }
 
     // cava needs the microphone named in its config, so each time the HUD
@@ -776,37 +855,46 @@ Item {
     // late stops it.
     property bool cavaReady: false
     property int cavaRequest: 0
-    readonly property int maxSpectrumBars: 64
-    readonly property int maxSpectrumLineChars: 1024
 
     function startCava() {
         cavaReady = false;
         cavaRequest++;
-        if (!dataDirReady || cavaTemplate.text().indexOf("@SOURCE@") < 0) return;
-        sourceQuery.request = cavaRequest;
-        sourceQuery.running = true;
+        if (!dataDirReady || cavaConfigPath === "" || cavaTemplateText.indexOf("@SOURCE@") < 0) return;
+        sourceQuery.start();
     }
 
-    FileView {
-        id: cavaTemplate
-        path: String(Qt.resolvedUrl("cava.conf")).replace(/^file:\/\//, "")
-        printErrors: false
+    // The cava.conf template beside this file, read once at startup.
+    property string cavaTemplateText: ""
+
+    Bounded {
+        id: templateRead
+        build: function() {
+            let path = "";
+            try {
+                path = decodeURIComponent(String(Qt.resolvedUrl("cava.conf")).replace(/^file:\/\//, ""));
+            } catch (e) {}
+            return Helper.read(path, { maxBytes: root.maxTemplateBytes, follow: true });
+        }
+        onSucceeded: function(text) { root.cavaTemplateText = text; }
     }
 
-    Process {
+    Bounded {
         id: sourceQuery
+        // The cava request this query answers, set as it starts.
         property int request: 0
-        command: root.sourceCommand
-        stdout: StdioCollector {
-            onStreamFinished: {
-                const source = text.trim();
-                if (sourceQuery.request !== root.cavaRequest || !root.live) return;
-                // A PipeWire node name; anything else is not written into
-                // the config.
-                if (!/^[A-Za-z0-9_.:@+-]{1,256}$/.test(source)) return;
-                cavaConfig.request = sourceQuery.request;
-                cavaConfig.setText(cavaTemplate.text().split("@SOURCE@").join(source));
-            }
+        build: function() {
+            sourceQuery.request = root.cavaRequest;
+            return Helper.run(root.sourceCommand,
+                              { seconds: 5, maxBytes: root.maxSourceBytes, env: root.childEnvironment });
+        }
+        onSucceeded: function(text) {
+            if (sourceQuery.request !== root.cavaRequest || !root.live) return;
+            // A PipeWire node name; anything else is not written into the
+            // config.
+            const source = Sanitize.pipewireSource(text);
+            if (source === null) return;
+            cavaConfig.request = sourceQuery.request;
+            cavaConfig.setText(root.cavaTemplateText.split("@SOURCE@").join(source));
         }
     }
 
@@ -822,24 +910,21 @@ Item {
         }
     }
 
+    // cava, through Helper.stream: env -i, a deadline, and TERM if the
+    // shell dies, so a crashed shell does not leave it holding the
+    // microphone.
+    readonly property var cavaCommand: Helper.stream(
+        [cavaExecutable].concat(cavaArgs || [], ["-p", cavaConfigPath]),
+        { seconds: liveDeadlineSecs, env: childEnvironment })
+
     Process {
         id: cava
-        running: root.live && root.cavaReady
-        // setpriv ties cava's life to the shell's, so a crashed shell does
-        // not leave it holding the microphone.
-        command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", root.cavaExecutable, "-p", root.cavaConfigPath]
+        running: root.live && root.cavaReady && root.cavaCommand !== null
+        command: root.cavaCommand || []
         stdout: SplitParser {
             onRead: function(line) {
-                if (line.length > root.maxSpectrumLineChars) return;
-                const parts = line.split(";");
-                if (parts.length > root.maxSpectrumBars + 1) return;
-                const values = [];
-                for (let i = 0; i < parts.length; i++) {
-                    if (parts[i].length === 0) continue;
-                    const v = Number(parts[i]) / 1000;
-                    values.push(isFinite(v) ? root.clamp(v, 0, 1) : 0);
-                }
-                if (values.length > 0) {
+                const values = Sanitize.cavaLine(line);
+                if (values !== null) {
                     root.target = values;
                     root.lastCavaMs = Date.now();
                 }
