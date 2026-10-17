@@ -68,9 +68,13 @@ the clock.
 | `lens`     | array of integers| `done`       | Length in characters of each word of the output; at most 400 entries. |
 
 Only `stage` and `t` are required in every write. The HUD keeps a field only
-when it has the type above and a plausible value: lengths from 0 to 1000,
-counts up to a million, `model` up to 128 characters and `reason` up to 32.
-It ignores unknown fields, so a script may add its own.
+when it has the type above and a plausible value: times from 0 to 10^15 ms,
+lengths from 0 to 1000, counts up to a million, `timeout` up to an hour,
+`model` as printable ASCII of at most 128 characters, and `reason` as one of
+the five values above. It ignores unknown fields, so a script may add its
+own. A file larger than 64 KiB is ignored whole, and so is anything that is
+not a regular file of the user's own reached without a symlink: the script
+should write the file itself, not link it.
 
 ## Staleness
 

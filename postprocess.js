@@ -4,6 +4,8 @@
 // post-process script writes for the HUD. docs/postprocess-protocol.md
 // describes the format; this keeps only the fields it defines, each with
 // the expected type and a sane range, so the drawing code can trust them.
+// Fields are taken only when they are the object's own, and the strings
+// that choose what the HUD says are whitelisted.
 
 // A status file larger than this is not one the protocol produces.
 var MAX_CHARS = 65536;
@@ -11,6 +13,11 @@ var MAX_CHARS = 65536;
 var MAX_WORDS = 400;
 
 var STAGES = ["start", "llm", "done"];
+var REASONS = ["ok", "rejected", "loading", "unreachable", "disabled"];
+
+function field(o, key) {
+    return Object.prototype.hasOwnProperty.call(o, key) ? o[key] : undefined;
+}
 
 function finite(v, lo, hi) {
     return typeof v === "number" && isFinite(v) && v >= lo && v <= hi;
@@ -25,8 +32,9 @@ function lens(v) {
     return out;
 }
 
-function shortString(v, max) {
-    return typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined;
+// A model name: printable ASCII, at most 128 characters.
+function modelName(v) {
+    return typeof v === "string" && /^[\x20-\x7e]{1,128}$/.test(v) ? v : undefined;
 }
 
 // Parse the file's text. Returns the status with only known, well-typed
@@ -40,18 +48,26 @@ function parse(text) {
         return null;
     }
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-    if (STAGES.indexOf(raw.stage) < 0 || !finite(raw.t, 0, 1e15)) return null;
+    var stage = field(raw, "stage");
+    var t = field(raw, "t");
+    if (STAGES.indexOf(stage) < 0 || !finite(t, 0, 1e15)) return null;
 
-    var pp = { stage: raw.stage, t: raw.t, raw_lens: lens(raw.raw_lens), lens: lens(raw.lens) };
-    if (finite(raw.stt_t, 0, 1e15)) pp.stt_t = raw.stt_t;
-    if (finite(raw.llm_t, 0, 1e15)) pp.llm_t = raw.llm_t;
-    if (finite(raw.words_in, 0, 1e6)) pp.words_in = Math.round(raw.words_in);
-    if (finite(raw.words, 0, 1e6)) pp.words = Math.round(raw.words);
-    if (finite(raw.timeout, 0, 3600)) pp.timeout = raw.timeout;
-    if (typeof raw.cleaned === "boolean") pp.cleaned = raw.cleaned;
-    var model = shortString(raw.model, 128);
-    if (model !== undefined) pp.model = model;
-    var reason = shortString(raw.reason, 32);
-    if (reason !== undefined) pp.reason = reason;
+    var pp = { stage: stage, t: t, raw_lens: lens(field(raw, "raw_lens")), lens: lens(field(raw, "lens")) };
+    var v = field(raw, "stt_t");
+    if (finite(v, 0, 1e15)) pp.stt_t = v;
+    v = field(raw, "llm_t");
+    if (finite(v, 0, 1e15)) pp.llm_t = v;
+    v = field(raw, "words_in");
+    if (finite(v, 0, 1e6)) pp.words_in = Math.round(v);
+    v = field(raw, "words");
+    if (finite(v, 0, 1e6)) pp.words = Math.round(v);
+    v = field(raw, "timeout");
+    if (finite(v, 0, 3600)) pp.timeout = v;
+    v = field(raw, "cleaned");
+    if (typeof v === "boolean") pp.cleaned = v;
+    v = modelName(field(raw, "model"));
+    if (v !== undefined) pp.model = v;
+    v = field(raw, "reason");
+    if (REASONS.indexOf(v) >= 0) pp.reason = v;
     return pp;
 }
