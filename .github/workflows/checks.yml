@@ -12,38 +12,47 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Omarchy is Arch, and so is this: the same Qt the plugin runs on, new
+    # enough for QtQuick.Effects (Card.qml's MultiEffect) and for qmllint's
+    # per-category configuration in .qmllint.ini. Ubuntu's Qt 6.4 has
+    # neither.
+    container: archlinux:latest
+    timeout-minutes: 15
     steps:
+      # qt6-declarative carries qmllint, qmltestrunner and every QML module
+      # the tests import, QtTest and QtQuick.Effects included. The rest is
+      # what the scripts and tests run: bash and coreutils (env, timeout,
+      # head, tee, install), util-linux for setpriv and su, python, node and
+      # curl. Most of these are in the image already; naming them keeps the
+      # list honest. git is installed before the checkout so it is a real
+      # clone rather than an unpacked archive, although nothing below needs
+      # it.
+      #
+      # --disable-sandbox: inside a container, pacman's downloader sandbox
+      # can be refused the Landlock and setuid calls it makes, which fails
+      # every download. Packages are still verified against their
+      # signatures, and the container is thrown away afterwards.
+      - name: Install Qt 6 and the tools the checks run
+        run: |
+          pacman -Syu --noconfirm --needed --disable-sandbox \
+            qt6-declarative \
+            bash coreutils util-linux \
+            python nodejs curl git
+
       - uses: actions/checkout@v4
 
-      # qmllint and qmltestrunner both come from Qt 6's declarative tools.
-      # Quickshell is not present here, so its imports do not resolve;
-      # scripts/lint judges accordingly, which is what lets the same command
-      # be run here and on a desktop.
-      #
-      # Ubuntu splits the QML modules finely and apt pulls none of them in, so
-      # TestCase's own dependency tree has to be spelled out. The ones that are
-      # not obvious: workerscript, because a `.pragma library` script is
-      # loaded through that machinery; quick-window, because TestCase itself
-      # imports it; and effects, for the MultiEffect in Card.qml, which
-      # tst_card.qml instantiates. Missing any of them makes every test fail
-      # at compile with a message about an uninstalled module rather than
-      # about the test.
-      - name: Install Qt 6 QML tools
+      # The container runs as root, and the plugin never does: the file
+      # checks in Helper.js depend on who owns what. The checks run as an
+      # ordinary user that owns a copy of the checkout and makes its scratch
+      # directory under its own home, as on a desktop.
+      - name: Make a test user
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            qt6-declarative-dev-tools \
-            qml6-module-qttest \
-            qml6-module-qtqml \
-            qml6-module-qtqml-workerscript \
-            qml6-module-qtqml-models \
-            qml6-module-qtquick \
-            qml6-module-qtquick-window \
-            qml6-module-qtquick-effects
+          useradd --create-home tester
+          cp -a "$GITHUB_WORKSPACE" /home/tester/plugin
+          chown -R tester:tester /home/tester/plugin
 
       - name: Lint
-        run: scripts/lint
+        run: su tester -c 'cd /home/tester/plugin && scripts/lint'
 
       - name: Test
-        run: scripts/test
+        run: su tester -c 'cd /home/tester/plugin && scripts/test'
