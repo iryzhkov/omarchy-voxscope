@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Runs examples/voxtype-clean against a stub Ollama server on loopback and
 checks what it types and what it reports: the input and response caps, the
-settings it accepts, the control characters it never types, the bound on an
-LLM answer, the deadline on a request, the proxy it never uses and the
+settings it accepts, the control and invisible formatting characters it
+never types, the UTF-8 it always writes, the bound on an LLM answer, the deadline on a request, the proxy it never uses and the
 status file it writes.
 
 Run by scripts/test, which passes a scratch directory in
@@ -14,6 +14,7 @@ scripts/test made.
 import http.server
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import unittest
 
 # Loading the script as a module must not leave a __pycache__ beside it.
@@ -39,8 +41,20 @@ assert stat.S_ISDIR(os.lstat(SCRATCH).st_mode), SCRATCH
 assert os.lstat(SCRATCH).st_uid == os.getuid(), SCRATCH
 
 # What the script must never type: every C0 and C1 control character but the
-# newline, and the Unicode line and paragraph separators.
+# newline, the Unicode line and paragraph separators, and every invisible
+# formatting character (category Cf, and the whole tag block) but the
+# zero-width joiner.
 FORBIDDEN = {chr(c) for c in [*range(0x00, 0x0a), *range(0x0b, 0x20), *range(0x7f, 0xa0), 0x2028, 0x2029]}
+FORBIDDEN |= {chr(c) for c in range(0x80, 0x110000)
+              if unicodedata.category(chr(c)) == "Cf" or 0xE0000 <= c <= 0xE007F} - {"\N{ZERO WIDTH JOINER}"}
+# A sample of those formatting characters: right-to-left override, the
+# isolates, the Arabic letter mark, zero-width space and non-joiner, word
+# joiner, soft hyphen, byte order mark, and tag characters.
+INVISIBLE = "".join(map(chr, [0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0x061C, 0x200B, 0x200C, 0x2060,
+                               0x00AD, 0xFEFF, 0xE0001, 0xE0041, 0xE007F]))
+# Emoji sequences that need the zero-width joiner and variation selector.
+EMOJI = ("\U0001f468\N{ZERO WIDTH JOINER}\U0001f469\N{ZERO WIDTH JOINER}\U0001f467 "
+         "\N{HEAVY BLACK HEART}\N{VARIATION SELECTOR-16}")
 
 
 class Stub:
@@ -212,6 +226,52 @@ class VoxtypeClean(unittest.TestCase):
                               VOXTYPE_CLEAN_LLM="0")
         self.assertEqual(out, "one two[2J three four five six")
         self.assertEqual(self.status()["reason"], "disabled")
+
+    def test_invisible_formatting_never_reaches_the_output_from_an_answer(self):
+        # A bidirectional override would make "txt.exe" read as "exe.txt";
+        # tags and zero-width characters hide text altogether.
+        self.ollama.answer = ("Hello" + INVISIBLE + " there \N{RIGHT-TO-LEFT OVERRIDE}exe.txt"
+                              "\N{POP DIRECTIONAL FORMATTING} friend " + EMOJI + ".")
+        out = self.run_script(b"hello there exe txt friend family")
+        self.assertEqual(self.status()["reason"], "ok")
+        self.assert_typeable(out)
+        self.assertEqual(out, f"Hello there exe.txt friend {EMOJI}.")
+
+    def test_invisible_formatting_never_reaches_the_output_from_the_fallback(self):
+        out = self.run_script(("hello" + INVISIBLE + " there\N{ZERO WIDTH SPACE} friend " + EMOJI).encode(),
+                              VOXTYPE_CLEAN_LLM="0")
+        self.assert_typeable(out)
+        self.assertEqual(out, f"hello there friend {EMOJI}")
+
+    def test_invisible_formatting_never_reaches_the_output_of_an_oversized_transcript(self):
+        data = ("a\N{RIGHT-TO-LEFT OVERRIDE}b\U000e0041 " + EMOJI + " ").encode() * 60000
+        self.assertGreater(len(data), 1 << 20)
+        out = self.run_script(data)
+        self.assertEqual(out, f"ab {EMOJI} " * 60000)
+        self.assertEqual(self.ollama.requests, [])
+
+    def test_an_answer_with_a_lone_surrogate_falls_back(self):
+        # Valid JSON, but no valid text: the surrogate cannot be written as
+        # UTF-8, and writing it used to fail after the status said cleaned.
+        text = b"hello there friend how are you today"
+        self.ollama.body = b'{"response":"Hello \\ud800 there friend how are you today"}'
+        self.assertEqual(self.run_script(text), text.decode())
+        status = self.status()
+        self.assertEqual((status["reason"], status["cleaned"]), ("rejected", False))
+
+    def test_output_is_utf8_and_never_fails_to_encode(self):
+        m = load({})
+        raw = io.BytesIO()
+        # A text layer that could encode neither character.
+        ascii_out = io.TextIOWrapper(raw, encoding="ascii")
+        saved = sys.stdout
+        sys.stdout = ascii_out
+        try:
+            m.emit("caf\xe9 \ud800!")
+        finally:
+            sys.stdout = saved
+            ascii_out.detach()
+        self.assertEqual(raw.getvalue(), "caf\xe9 ?!".encode())
 
     def test_an_oversized_transcript_passes_through_filtered_and_unsent(self):
         data = b"a\r\nb\x1bc\xc2\x9b " * 300000
