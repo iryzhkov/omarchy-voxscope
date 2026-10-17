@@ -31,7 +31,11 @@ function directory(value, fallback) {
     if (typeof value !== "string" || value.length < 2 || value.length > 512) return fallback;
     if (value.charAt(0) !== "/" || /[\x00-\x1f\x7f]/.test(value)) return fallback;
     if (/(^|\/)\.\.?(\/|$)/.test(value)) return fallback;
-    return value.replace(/\/+$/, "") || fallback;
+    // Trailing slashes are counted rather than matched with /\/+$/, which
+    // rescans every run of slashes from each of its positions.
+    let end = value.length;
+    while (end > 0 && value.charAt(end - 1) === "/") end--;
+    return value.slice(0, end) || fallback;
 }
 
 // The plugin's id from its manifest, or `fallback`.
@@ -87,27 +91,41 @@ function toggleStamp(raw) {
 // when it is not set. Only the key in the [audio] table counts, or the
 // dotted key audio.max_duration_secs before any table; a key of the same
 // name in another table is something else. The last assignment wins.
+//
+// The file is untrusted and parsed on the shell's UI thread, so every
+// pattern here runs in time linear in the line: no two adjacent quantifiers
+// can match the same characters, and spaces inside a table header are
+// trimmed with String.trim rather than by the pattern.
 function maxRecordSecs(raw) {
     if (typeof raw !== "string") return null;
+    // A table header, [name] or [[name]], with a trailing comment.
+    const header = /^\[\[?([^\[\]]*)\]\]?\s*(#.*)?$/;
+    const inAudio = /^max_duration_secs\s*=\s*(\d{1,9})\s*(#.*)?$/;
+    const topLevel = /^audio\s*\.\s*max_duration_secs\s*=\s*(\d{1,9})\s*(#.*)?$/;
     const lines = raw.split("\n");
     let table = "";
     let found = null;
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
-        // A table header, [name] or [[name]], with optional spaces and a
-        // trailing comment.
-        const header = /^\[\[?\s*([^\[\]]*?)\s*\]\]?\s*(#.*)?$/.exec(line);
-        if (header) {
-            table = header[1].replace(/\s*\.\s*/g, ".").replace(/"/g, "");
+        const h = header.exec(line);
+        if (h) {
+            table = tableName(h[1]);
             continue;
         }
-        const key = table === "audio" ? "max_duration_secs"
-            : table === "" ? "audio\\s*\\.\\s*max_duration_secs" : null;
+        const key = table === "audio" ? inAudio : table === "" ? topLevel : null;
         if (key === null) continue;
-        const m = new RegExp("^" + key + "\\s*=\\s*(\\d{1,9})\\s*(#.*)?$").exec(line);
+        const m = key.exec(line);
         if (m) found = Math.max(1, Math.min(86400, Number(m[1])));
     }
     return found;
+}
+
+// A table header's name with the spaces around each dotted part and any
+// quotes removed: ` "audio" . x ` is "audio.x".
+function tableName(inner) {
+    const parts = inner.split(".");
+    for (let i = 0; i < parts.length; i++) parts[i] = parts[i].trim();
+    return parts.join(".").split("\"").join("");
 }
 
 // The colours Voxscope uses from a theme's colors.toml, each a "#rrggbb"

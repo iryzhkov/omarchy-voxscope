@@ -17,6 +17,9 @@ TestCase {
         compare(Sanitize.directory("/" + "a".repeat(600), "/fallback"), "/fallback");
         compare(Sanitize.directory(undefined, ""), "");
         compare(Sanitize.directory("/", "/fallback"), "/fallback");
+        compare(Sanitize.directory("//", "/fallback"), "/fallback");
+        compare(Sanitize.directory("/a//", "/fallback"), "/a");
+        compare(Sanitize.directory("/" + "/".repeat(510) + "a", "/fallback"), "/" + "/".repeat(510) + "a");
     }
 
     function test_plugin_id() {
@@ -78,6 +81,42 @@ TestCase {
         compare(Sanitize.maxRecordSecs("[audio.extra]\nmax_duration_secs = 60\n"), null);
         compare(Sanitize.maxRecordSecs("[[audio]]\nmax_duration_secs = 50\n"), 50);
         compare(Sanitize.maxRecordSecs("[audio]\r\nmax_duration_secs = 20\r\n"), 20);
+        // Quoted names and spaces around the dots of a header.
+        compare(Sanitize.maxRecordSecs("[ \"audio\" ] # c\nmax_duration_secs = 40\n"), 40);
+        compare(Sanitize.maxRecordSecs("[ audio . extra ]\nmax_duration_secs = 40\n"), null);
+        compare(Sanitize.maxRecordSecs("[audio]\n[ \"audio\" . \"x\" ]\nmax_duration_secs = 40\n"), null);
+        compare(Sanitize.maxRecordSecs("[[ audio ]]\nmax_duration_secs = 35\n"), 35);
+        compare(Sanitize.maxRecordSecs("audio . max_duration_secs = 25\n"), 25);
+    }
+
+    // Voxtype's config is untrusted and parsed on the UI thread, so a
+    // garbled line must cost time linear in its length. Each shape below
+    // took seconds at 2 KiB with the earlier header pattern, whose spaces
+    // could be matched by three quantifiers; at 64 KiB it would hang.
+    function test_max_record_secs_hostile_lines_are_linear() {
+        const sp = " ".repeat(65536);
+        const shapes = [
+            ["[ + spaces", "[" + sp],
+            ["[ + spaces + x", "[" + sp + "x"],
+            ["[ + spaces + ] + spaces + x", "[" + sp + "]" + sp + "x"],
+            ["[[ + spaces + ]] + spaces + x", "[[" + sp + "]]" + sp + "x"],
+            ["[a + spaces + b]", "[a" + sp + "b]"],
+            ["[ + dotted spaces + ]", "[" + " . ".repeat(21846) + "]"],
+            ["top-level key + spaces + x", "audio" + sp + "." + sp + "max_duration_secs" + sp + "=" + sp + "1" + sp + "x"],
+            ["[audio] key + spaces + x", "[audio]\nmax_duration_secs" + sp + "=" + sp + "1" + sp + "x"]
+        ];
+        for (let i = 0; i < shapes.length; i++) {
+            const t0 = Date.now();
+            compare(Sanitize.maxRecordSecs(shapes[i][1]), null, shapes[i][0]);
+            const ms = Date.now() - t0;
+            verify(ms < 500, shapes[i][0] + " took " + ms + " ms");
+        }
+        // A whole 256 KiB config of short garbled lines.
+        const t0 = Date.now();
+        compare(Sanitize.maxRecordSecs("[ \n".repeat(87381)), null);
+        compare(Sanitize.maxRecordSecs("[audio]\n" + "max_duration_secs = 1 x\n".repeat(10922)), null);
+        const ms = Date.now() - t0;
+        verify(ms < 1000, "256 KiB configs took " + ms + " ms");
     }
 
     function test_theme_colours() {
@@ -91,6 +130,17 @@ TestCase {
         compare(c.dark_background, null);
         compare(c.mode, "dark");
         compare(Sanitize.themeColours('accent = "#7aa2f7"\n' + " ".repeat(70000)).accent, null);
+    }
+
+    function test_theme_colours_hostile_text_is_linear() {
+        const sp = " ".repeat(32000);
+        const t0 = Date.now();
+        const c = Sanitize.themeColours("background" + sp + "=" + sp + "x");
+        compare(Sanitize.themeColours("mode" + sp + "=" + sp + "x").mode, null);
+        compare(Sanitize.themeColours("accent =\n".repeat(7000)).accent, null);
+        const ms = Date.now() - t0;
+        compare(c.background, null);
+        verify(ms < 500, "took " + ms + " ms");
     }
 
     function test_timing_rates() {
