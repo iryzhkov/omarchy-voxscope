@@ -674,11 +674,14 @@ Item {
     }
 
     // Creates the data and scratch directories once at startup, private to
-    // this user; nothing is written until it has succeeded.
+    // this user; nothing is written until it has succeeded. install -d
+    // makes any missing parents, which are XDG's rather than Voxscope's and
+    // keep the usual mode, and sets mode 700 on both directories whether it
+    // made them now or they were already there.
     Bounded {
         id: makeDirs
         build: function() {
-            return Helper.run(["/usr/bin/mkdir", "-p", "-m", "700", "--", root.dataDir, root.scratchDir],
+            return Helper.run(["/usr/bin/install", "-d", "-m", "700", "--", root.dataDir, root.scratchDir],
                               { seconds: 5, maxBytes: 4096 });
         }
         onSucceeded: root.dataDirReady = true
@@ -733,11 +736,14 @@ Item {
     readonly property string calibrationPath: dataDir !== "" ? dataDir + "/calibration.json" : ""
     readonly property string timingPath: dataDir !== "" ? dataDir + "/timing.json" : ""
 
+    // Both are written to a temporary file and renamed into place, so a
+    // crash mid-write never leaves a torn file behind.
     FileView {
         id: calibrationFile
         path: root.calibrationPath
         preload: false
         printErrors: false
+        atomicWrites: true
     }
 
     Bounded {
@@ -764,6 +770,7 @@ Item {
         path: root.timingPath
         preload: false
         printErrors: false
+        atomicWrites: true
     }
 
     Bounded {
@@ -903,8 +910,10 @@ Item {
         property int request: 0
         path: root.cavaConfigPath
         printErrors: false
-        // Only ever written; there is nothing in it worth loading.
+        // Only ever written; there is nothing in it worth loading. cava
+        // never sees half a config.
         preload: false
+        atomicWrites: true
         onSaved: {
             if (request === root.cavaRequest && root.live) root.cavaReady = true;
         }

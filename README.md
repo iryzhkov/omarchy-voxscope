@@ -246,7 +246,8 @@ sets them) and a deadline:
   and in any case a minute after Voxtype's recording cap;
 - `/usr/bin/pactl get-default-source` once per recording, and
   `/usr/bin/voxtype record stop` for the silence auto-stop;
-- `/usr/bin/mkdir` once at startup, for the directories above.
+- `/usr/bin/install -d -m 700` once at startup, which makes the directories
+  above and keeps them private to you.
 
 It reads Voxtype's state, `osd_suppressed`, `toggle-start` and
 `postprocess.json` in `$XDG_RUNTIME_DIR/voxtype/`, Voxtype's `config.toml`,
