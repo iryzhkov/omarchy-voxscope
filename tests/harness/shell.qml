@@ -28,6 +28,16 @@ ShellRoot {
     property var idleWrittenAt: null
     property var lingerStartedAt: null
     property bool hiddenLogged: false
+    // Seen since the last "clear" step: the HUD shown, the window mapped,
+    // the audio bridge and cava allowed to run (`live`). Followed through
+    // change signals rather than polled, so a single-frame flash counts.
+    property bool sawShown: false
+    property bool sawLive: false
+    property int unmaps: 0
+    property real mappedAt: 0
+    // Whether the stop command is expected to have run by the "stopped"
+    // check.
+    property bool expectStopped: true
 
     // Each scenario is a list of [ms from start, action, argument].
     readonly property var scripts: ({
@@ -44,6 +54,7 @@ ShellRoot {
             [4250, "grab", "typing"],
             [4550, "state", "idle"],
             [4620, "grab", "linger-a"],
+            [4650, "check", "no-unmap"],
             [4700, "grab", "linger-b"],
             [7000, "quit", ""]
         ],
@@ -61,6 +72,8 @@ ShellRoot {
             [3550, "grab", "fast-forward-b"],
             [6000, "quit", ""]
         ],
+        // Recording again during the linger: the HUD starts over in the
+        // same window, which must not unmap in between.
         relinger: [
             [0, "state", "recording"],
             [2500, "state", "transcribing"],
@@ -68,16 +81,90 @@ ShellRoot {
             [2730, "pp", "llm"],
             [3950, "pp", "done"],
             [4550, "state", "idle"],
-            [4700, "grab", "lingering"],
-            [4800, "state", "recording"],
-            [4900, "check", "rerecord"],
+            [4600, "grab", "lingering"],
+            [4650, "state", "recording"],
+            [4750, "check", "rerecord"],
             [5000, "grab", "rerecord"],
             [6500, "state", "transcribing"],
             [6700, "pp", "start"],
             [7000, "pp", "done-raw"],
-            [7100, "grab", "second-typing"],
+            [7300, "grab", "second-typing"],
+            [7300, "check", "no-unmap"],
             [7400, "state", "idle"],
             [9500, "quit", ""]
+        ],
+        // Two `--no-osd` dictations, then an ordinary one. The first has
+        // the marker created just after the recording state and removed just
+        // after idle, as Voxtype 1.0.1 does; the second the other way round.
+        // Neither may show, linger or run the bridge; the third must show.
+        suppressed: [
+            [0, "state", "recording"],
+            [30, "marker", "on"],
+            [1000, "check", "never-shown"],
+            [2000, "state", "transcribing"],
+            [2190, "pp", "start"],
+            [2230, "pp", "llm"],
+            [2600, "pp", "done"],
+            [2900, "state", "idle"],
+            [2920, "marker", "off"],
+            [3600, "check", "never-shown"],
+            [4000, "marker", "on"],
+            [4030, "state", "recording"],
+            [5000, "state", "transcribing"],
+            [5200, "pp", "start"],
+            [5300, "pp", "done-raw"],
+            [5500, "marker", "off"],
+            [5520, "state", "idle"],
+            [6200, "check", "never-shown"],
+            [6500, "state", "recording"],
+            [7000, "check", "shown"],
+            [7100, "grab", "unsuppressed"],
+            [8000, "state", "transcribing"],
+            [8200, "pp", "start"],
+            [8300, "pp", "done-raw"],
+            [8600, "state", "idle"],
+            [11500, "quit", ""]
+        ],
+        // A marker that arrives well into a shown recording hides the HUD
+        // and stops the bridge and cava (`live`); the dictation stays hidden
+        // through the rest of it.
+        latemarker: [
+            [0, "state", "recording"],
+            [700, "check", "shown"],
+            [800, "marker", "on"],
+            [900, "check", "hidden-now"],
+            [1000, "clear", ""],
+            [1500, "state", "transcribing"],
+            [1700, "pp", "start"],
+            [1800, "pp", "done-raw"],
+            [2000, "state", "idle"],
+            [2020, "marker", "off"],
+            [2700, "check", "never-shown"],
+            [3000, "quit", ""]
+        ],
+        // Voxtype dies while recording and leaves its state file behind;
+        // with a one-second cap the HUD gives up 31 s in.
+        stale: [
+            [0, "state", "recording"],
+            [2000, "check", "shown"],
+            [30000, "check", "shown"],
+            [32000, "check", "stalled"],
+            [32500, "state", "idle"],
+            [33500, "quit", ""]
+        ],
+        // Voxtype's runtime directory does not exist when the HUD loads;
+        // it is created half a second in, and the HUD must still follow the
+        // state file and the marker.
+        latedir: [
+            [500, "mkdir", ""],
+            [700, "state", "idle"],
+            [3000, "state", "recording"],
+            [3300, "check", "state-seen"],
+            [3500, "marker", "on"],
+            [3800, "check", "hidden-now"],
+            [4000, "state", "idle"],
+            [4020, "marker", "off"],
+            [5000, "quit", ""]
         ],
         noscript: [
             [0, "state", "recording"],
@@ -120,6 +207,23 @@ ShellRoot {
         id: hud
         bridgeCommand: ["/usr/bin/python3", "-I", harness.bridge,
                         harness.scenario === "silence" ? "silent" : "speech"]
+        onShownChanged: if (shown) harness.sawShown = true
+        onLiveChanged: if (live) harness.sawLive = true
+        onWindowShownChanged: {
+            const e = Date.now() - harness.t0;
+            if (windowShown) {
+                harness.sawShown = true;
+                harness.mappedAt = e;
+            } else {
+                harness.unmaps++;
+                // No dictation is that short; this is the window flapping.
+                if (e - harness.mappedAt < 100) {
+                    console.log("FAIL window flashed for " + (e - harness.mappedAt) + " ms");
+                }
+            }
+            console.log("WINDOW " + (windowShown ? "mapped" : "unmapped") + " at "
+                + (Date.now() - harness.t0) + " ms");
+        }
         stopCommand: ["/usr/bin/touch", harness.runtime + "/stopped"]
         sourceCommand: harness.scenario === "cava" ? ["/usr/bin/pactl", "get-default-source"] : ["/usr/bin/false"]
     }
@@ -143,12 +247,31 @@ ShellRoot {
         preload: false
     }
 
+    // Written as Voxtype writes it: "1", in place. A process rather than a
+    // FileView, which skips writing text it already holds.
+    Process {
+        id: writeMarker
+        command: ["/usr/bin/sh", "-c", "printf 1 >\"$1\"", "sh", harness.runtime + "/voxtype/osd_suppressed"]
+    }
+
+    Process {
+        id: removeMarker
+        command: ["/usr/bin/rm", "-f", "--", harness.runtime + "/voxtype/osd_suppressed"]
+    }
+
+    Process {
+        id: makeVoxtypeDir
+        command: ["/usr/bin/mkdir", "-p", "--", harness.runtime + "/voxtype"]
+    }
+
     // Its path is set only when checked, which makes it load then.
     FileView {
         id: stoppedFile
         printErrors: false
-        onLoaded: console.log("CHECK silence auto-stop ran the stop command")
-        onLoadFailed: console.log("FAIL silence auto-stop did not run the stop command")
+        onLoaded: console.log((harness.expectStopped ? "CHECK" : "FAIL")
+            + " silence auto-stop ran the stop command")
+        onLoadFailed: console.log((harness.expectStopped ? "FAIL" : "CHECK")
+            + " silence auto-stop did not run the stop command")
     }
 
     function longLens() {
@@ -172,6 +295,14 @@ ShellRoot {
             if (arg === "recording") status = {};
         } else if (action === "toggle") {
             toggleFile.setText(String(now));
+        } else if (action === "marker") {
+            if (arg === "on") writeMarker.running = true;
+            else removeMarker.running = true;
+        } else if (action === "mkdir") {
+            makeVoxtypeDir.running = true;
+        } else if (action === "clear") {
+            sawShown = false;
+            sawLive = false;
         } else if (action === "pp") {
             if (arg === "start") {
                 report("start", { stt_t: now, raw_lens: lens, words_in: lens.length });
@@ -196,7 +327,7 @@ ShellRoot {
         } else if (action === "check") {
             check(arg);
         } else if (action === "quit") {
-            if (!hiddenLogged) console.log("FAIL the HUD was still shown at the end");
+            if (!hiddenLogged && hud.shown) console.log("FAIL the HUD was still shown at the end");
             Qt.quit();
         }
     }
@@ -209,6 +340,32 @@ ShellRoot {
                 + ", tape " + hud.tape.length + " columns");
         } else if (what === "stopped") {
             stoppedFile.path = harness.runtime + "/stopped";
+
+        } else if (what === "never-shown") {
+            const ok = !sawShown && !sawLive && !hud.lingering;
+            console.log((ok ? "CHECK" : "FAIL") + " suppressed dictation stayed hidden: shown seen "
+                + sawShown + ", bridge/cava seen " + sawLive + ", lingering " + hud.lingering
+                + ", state " + hud.daemonState);
+        } else if (what === "shown") {
+            const ok = hud.shown && hud.windowShown;
+            console.log((ok ? "CHECK" : "FAIL") + " HUD shown in state " + hud.daemonState
+                + ": shown " + hud.shown + ", window " + hud.windowShown);
+        } else if (what === "hidden-now") {
+            const ok = !hud.shown && !hud.windowShown && !hud.live && !hud.cavaReady && hud.suppressed;
+            console.log((ok ? "CHECK" : "FAIL") + " late marker hid the HUD: shown " + hud.shown
+                + ", window " + hud.windowShown + ", live " + hud.live + ", suppressed " + hud.suppressed);
+        } else if (what === "no-unmap") {
+            console.log((unmaps === 0 ? "CHECK" : "FAIL") + " window unmapped " + unmaps
+                + " times before the last idle");
+        } else if (what === "stalled") {
+            const ok = hud.stalled && !hud.shown && !hud.windowShown && !hud.live;
+            console.log((ok ? "CHECK" : "FAIL") + " stale recording state hidden after "
+                + hud.elapsed.toFixed(1) + " s: stalled " + hud.stalled + ", shown " + hud.shown
+                + ", live " + hud.live);
+        } else if (what === "state-seen") {
+            const ok = hud.daemonState === "recording";
+            console.log((ok ? "CHECK" : "FAIL") + " state file followed after its directory appeared: "
+                + hud.daemonState);
         } else if (what === "cava") {
             const ok = hud.lastCavaMs > 0 && Date.now() - hud.lastCavaMs < 500;
             console.log((ok ? "CHECK" : "FAIL") + " cava spectrum: " + hud.target.length

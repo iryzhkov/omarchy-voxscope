@@ -23,7 +23,15 @@
 // Linger. When Voxtype goes idle after transcribing, the HUD stays up while
 // any scan still running fast-forwards and the typing animation runs out,
 // then hides; never longer than Timing.LINGER_MAX_MS after going idle.
-// Recording again meanwhile starts over at once.
+// Recording again meanwhile starts over at once, in the same window.
+//
+// Suppression. A dictation started with `voxtype record start --no-osd` is
+// never shown, not even during the linger, although Voxtype removes its
+// marker when it goes idle; see `suppressed`.
+//
+// Stale state. If Voxtype stays recording or transcribing for longer than
+// it could, it has died and left its state file behind; the HUD hides and
+// stops its timer, the audio bridge and cava until the state changes.
 //
 // Persistent data. Learned timing and the spectrum calibration live in
 // $XDG_STATE_HOME/voxscope (~/.local/state/voxscope), never in the plugin's
@@ -54,7 +62,8 @@ Item {
     property var manifest: null
 
     // External commands. A test harness substitutes harmless fakes.
-    property var bridgeCommand: ["/usr/bin/voxtype-audio-bridge"]
+    // setpriv ties the bridge's life to the shell's, as for cava below.
+    property var bridgeCommand: ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/voxtype-audio-bridge"]
     property var stopCommand: ["/usr/bin/voxtype", "record", "stop"]
     property var sourceCommand: ["/usr/bin/pactl", "get-default-source"]
     property string cavaExecutable: "/usr/bin/cava"
@@ -93,14 +102,37 @@ Item {
     readonly property string daemonState: voxtype.state
     readonly property bool recording: daemonState === "recording" || daemonState === "streaming"
     readonly property bool working: daemonState === "transcribing"
+    readonly property bool markerPresent: voxtype.osdSuppressed
     // Set when Voxtype went idle after transcribing and the HUD is still
     // finishing its animation; idleAt is when that happened.
     property bool lingering: false
     property var idleAt: null
     property var typingDoneAt: null
-    readonly property bool shown: !voxtype.osdSuppressed && (recording || working || lingering)
+    // Whether the typing-rate sample for the linger is still to be taken;
+    // see updateLinger.
+    property bool typingSamplePending: false
+    // Voxtype is recording or transcribing, or the HUD is lingering after
+    // it. Assigned once per state change, after `lingering`, so `shown`
+    // never goes false for a moment while a handler is half way through.
+    property bool inDictation: false
+    // Whether this dictation asked for no OSD. Voxtype removes the marker
+    // when it goes idle, and the marker and the state file can change in
+    // either order, so this is set when the dictation starts and whenever
+    // the marker is seen during it, and only reset when the next starts.
+    property bool suppressed: false
+    // True for a moment when a dictation starts with the HUD hidden, so a
+    // marker created just after the state is seen before the window maps.
+    property bool settling: false
+    readonly property int settleMs: 80
+    // Set when Voxtype has stayed recording or transcribing for longer than
+    // it could; cleared by the next state change.
+    property bool stalled: false
+    readonly property real transcribeLimitSecs: 120
+    readonly property bool shown: inDictation && !suppressed && !settling && !stalled
     // What the shell reads to tell whether a panel is open.
     readonly property bool opened: shown
+    // Recording with the HUD up; the audio bridge and cava run only then.
+    readonly property bool live: shown && recording
 
     property real stateSince: Date.now()
     // When the current transcription began; post-process statuses written
@@ -202,7 +234,30 @@ Item {
     // never maps on the wrong output first.
     onShownChanged: {
         if (shown) targetScreen = focusedScreen();
+        else endLinger();
         windowShown = shown;
+    }
+
+    onLiveChanged: {
+        if (live) startCava();
+        else cavaReady = false;
+    }
+
+    onMarkerPresentChanged: {
+        if (markerPresent && inDictation) suppressed = true;
+    }
+
+    Timer {
+        id: settleTimer
+        interval: root.settleMs
+        onTriggered: root.settling = false
+    }
+
+    function endLinger() {
+        lingering = false;
+        idleAt = null;
+        typingDoneAt = null;
+        typingSamplePending = false;
     }
 
     onDaemonStateChanged: {
@@ -212,26 +267,40 @@ Item {
         const t = Date.now();
         const isRecording = daemonState === "recording" || daemonState === "streaming";
         const isWorking = daemonState === "transcribing";
-        if ((prevState === "recording" || prevState === "streaming") && !isRecording) {
-            recSecs = (t - stateSince) / 1000;
+        const wasRecording = prevState === "recording" || prevState === "streaming";
+        const wasShown = inDictation && !suppressed && !settling && !stalled;
+        // A new dictation: recording begins (not a switch between recording
+        // and streaming), or transcribing is seen straight after idle.
+        const starts = (isRecording && !wasRecording) || (isWorking && prevState === "idle");
+        if (wasRecording && !isRecording) recSecs = (t - stateSince) / 1000;
+
+        // What `shown` is made of is assigned so that it can only go true
+        // once everything is in place: settling first, stalled last.
+        if (starts && !wasShown) {
+            settling = true;
+            settleTimer.restart();
         }
-        if (prevState === "transcribing" && !isWorking && !isRecording) {
-            if (ppFresh && pp.stage === "done") learnTyping((t - pp.t) / 1000);
+        if (starts) suppressed = markerPresent;
+        if (prevState === "transcribing" && !isWorking && !isRecording && wasShown && !suppressed) {
             idleAt = t;
             typingDoneAt = null;
+            typingSamplePending = true;
             lingering = true;
+            // The final status may have landed since the last poll.
+            ppFile.reload();
         } else {
-            lingering = false;
-            idleAt = null;
-            typingDoneAt = null;
+            endLinger();
         }
+        inDictation = isRecording || isWorking || lingering;
+        stalled = false;
+
+        if (!(wasRecording && isRecording)) stateSince = t;
         prevState = daemonState;
-        stateSince = t;
-        if (isRecording || isWorking) {
+        if (starts) {
             themeFile.reload();
             voxtypeConfig.reload();
         }
-        if (isRecording) {
+        if (isRecording && !wasRecording) {
             workSince = t;
             lastVoiceMs = t;
             autoStopSent = false;
@@ -242,9 +311,13 @@ Item {
             tapeSum = 0;
             tapeCount = 0;
             tapeLastMs = t;
-            startCava();
-        } else {
-            cavaReady = false;
+            level = [];
+            peak = [];
+            peakAge = [];
+            energy = 0;
+            voiceUntil = 0;
+            clipUntil = 0;
+            lastBridgeMs = 0;
         }
         if (isWorking) {
             workSince = t;
@@ -295,12 +368,28 @@ Item {
 
     function updateLinger(t) {
         if (!lingering) return;
+        // Voxtype types the output after the script's final status and goes
+        // idle when done, so that gap is the typing time. It is taken here
+        // rather than at idle, so a status that landed just before idle and
+        // was not polled yet still counts.
+        if (typingSamplePending && ppFresh && pp.stage === "done") {
+            typingSamplePending = false;
+            learnTyping((idleAt - pp.t) / 1000);
+        }
         if (stage === 3 && typingDoneAt === null && typingProgress() >= 1) typingDoneAt = t;
         if (Timing.lingerOver(t, idleAt, typingDoneAt)) {
-            lingering = false;
-            idleAt = null;
-            typingDoneAt = null;
+            endLinger();
+            inDictation = false;
         }
+    }
+
+    // Whether Voxtype has been in its current state for longer than it
+    // could be: recording past its cap with a grace period, or transcribing
+    // for longer than the transcription limit or twice the recording.
+    function isStale() {
+        if (recording) return elapsed > maxRecordSecs + 30;
+        if (working) return elapsed > Math.max(transcribeLimitSecs, recSecs * 2);
+        return false;
     }
 
     // Save the calibration every couple of seconds while recording, rather
@@ -308,7 +397,7 @@ Item {
     Timer {
         interval: 2000
         repeat: true
-        running: root.recording && root.calibrationLoaded && root.dataDirReady
+        running: root.live && root.calibrationLoaded && root.dataDirReady
         onTriggered: {
             if (root.bandRef.length === root.bands) {
                 calibrationFile.setText(JSON.stringify({ version: 1, ref: root.bandRef, noise: root.bandNoise }));
@@ -318,7 +407,7 @@ Item {
 
     VoxtypeAudio {
         id: audio
-        active: root.shown && root.recording
+        active: root.live
         command: root.bridgeCommand
         onFrameReceived: function(peak, rms, vad, tsMs) {
             const t = Date.now();
@@ -370,6 +459,11 @@ Item {
         const dt = Math.min(0.1, Math.max(0.001, (t - lastTickMs) / 1000));
         lastTickMs = t;
         now = t;
+
+        if (isStale()) {
+            stalled = true;
+            return;
+        }
 
         if (recording && now - lastCavaMs < 400 && target.length > 0) calibrate(dt);
         if (stage === 0 && toggleMode && !autoStopSent && silentFor >= silenceStopSecs) {
@@ -549,10 +643,12 @@ Item {
         onTriggered: ppFile.reload()
     }
 
-    // cava needs the microphone named in its config, so each recording asks
-    // PipeWire for the default source, writes a config from the cava.conf
-    // template beside this file, and only then starts cava. Any step that
-    // fails leaves the spectrum on the RMS fallback.
+    // cava needs the microphone named in its config, so each time the HUD
+    // shows a recording (`live`) it asks PipeWire for the default source,
+    // writes a config from the cava.conf template beside this file, and only
+    // then starts cava. Any step that fails leaves the spectrum on the RMS
+    // fallback. A suppressed recording never starts it, and one suppressed
+    // late stops it.
     property bool cavaReady: false
     property int cavaRequest: 0
     readonly property int maxSpectrumBars: 64
@@ -579,7 +675,7 @@ Item {
         stdout: StdioCollector {
             onStreamFinished: {
                 const source = text.trim();
-                if (sourceQuery.request !== root.cavaRequest || !root.recording) return;
+                if (sourceQuery.request !== root.cavaRequest || !root.live) return;
                 // A PipeWire node name; anything else is not written into
                 // the config.
                 if (!/^[A-Za-z0-9_.:@+-]{1,256}$/.test(source)) return;
@@ -597,13 +693,13 @@ Item {
         // Only ever written; there is nothing in it worth loading.
         preload: false
         onSaved: {
-            if (request === root.cavaRequest && root.recording) root.cavaReady = true;
+            if (request === root.cavaRequest && root.live) root.cavaReady = true;
         }
     }
 
     Process {
         id: cava
-        running: root.recording && root.cavaReady
+        running: root.live && root.cavaReady
         // setpriv ties cava's life to the shell's, so a crashed shell does
         // not leave it holding the microphone.
         command: ["/usr/bin/setpriv", "--pdeathsig", "TERM", root.cavaExecutable, "-p", root.cavaConfigPath]

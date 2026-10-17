@@ -10,8 +10,9 @@
 # touched; Voxtype itself is never contacted.
 #
 # Scenarios (see shell.qml): pipeline, fastidle, relinger, noscript,
-# silence, cap, cava. "cava" points PipeWire and Pulse at the real session
-# so cava can listen to the default microphone.
+# silence, cap, cava, suppressed, latemarker, stale, latedir.
+# "cava" points PipeWire and Pulse at the real session so cava can listen
+# to the default microphone. "stale" takes about 35 s.
 #
 # Output goes to $VOXSCOPE_TEST_DIR/<scenario> (default
 # ~/.cache/voxscope-test/<scenario>): frames/*.png and log.txt.
@@ -23,9 +24,9 @@ set -euo pipefail
 
 scenario=${1:-}
 case $scenario in
-  pipeline | fastidle | relinger | noscript | silence | cap | cava) ;;
+  pipeline | fastidle | relinger | noscript | silence | cap | cava | suppressed | latemarker | stale | latedir) ;;
   *)
-    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava" >&2
+    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava|suppressed|latemarker|stale|latedir" >&2
     exit 2
     ;;
 esac
@@ -55,6 +56,9 @@ fi
 if [[ $scenario == cap ]]; then
   printf '[audio]\nmax_duration_secs = 12\n' >"$run/config/voxtype/config.toml"
 fi
+if [[ $scenario == stale ]]; then
+  printf '[audio]\nmax_duration_secs = 1\n' >"$run/config/voxtype/config.toml"
+fi
 
 # Hyprland's IPC socket cannot be reached from here: its path under the
 # scratch runtime is longer than a Unix socket path may be. Without it the
@@ -66,7 +70,13 @@ if [[ $scenario == cava ]]; then
   audio_env=(PIPEWIRE_RUNTIME_DIR="$real_runtime" PULSE_SERVER="unix:$real_runtime/pulse/native")
 fi
 
-printf 'idle' >"$run/runtime/voxtype/state"
+# "latedir" starts without Voxtype's runtime directory; the harness creates
+# it.
+if [[ $scenario == latedir ]]; then
+  rmdir -- "$run/runtime/voxtype"
+else
+  printf 'idle' >"$run/runtime/voxtype/state"
+fi
 
 status=0
 env "${audio_env[@]}" XDG_RUNTIME_DIR="$run/runtime" WAYLAND_DISPLAY="$wayland" \
@@ -76,4 +86,4 @@ env "${audio_env[@]}" XDG_RUNTIME_DIR="$run/runtime" WAYLAND_DISPLAY="$wayland" 
   timeout 40 quickshell -p "$run/app/shell.qml" >"$run/log.txt" 2>&1 || status=$?
 
 echo "$scenario: exit $status, output in $run"
-sed -E 's/\x1b\[[0-9;]*m//g' "$run/log.txt" | grep -E 'qml: (FRAME|CHECK|FAIL)' | sed -E 's/.*qml: /  /' || true
+sed -E 's/\x1b\[[0-9;]*m//g' "$run/log.txt" | grep -E 'qml: (FRAME|CHECK|FAIL|WINDOW)' | sed -E 's/.*qml: /  /' || true

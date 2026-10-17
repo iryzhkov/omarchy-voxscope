@@ -85,7 +85,9 @@ Voxtype's OSD frontends exit at launch; the daemon still writes its state
 file and serves its audio socket, which is all Voxscope needs.
 
 A recording started with `voxtype record start --no-osd` hides Voxscope too,
-as it does Voxtype's own OSD.
+as it does Voxtype's own OSD: for the whole dictation, including the
+transcription, and without the linger afterwards. Voxscope does not run the
+audio bridge or cava for it.
 
 ### Optional: cava
 
