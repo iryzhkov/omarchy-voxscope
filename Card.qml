@@ -11,9 +11,12 @@
 //        length of the transcript's words
 //   OUT  the words typed out as runs of cells behind a block cursor; the
 //        subtitle gives the word count and whether the LLM cleaned the text
-// A stepper across the top tracks the same stages. The line from each
-// stage to the next is a row of small square cells, like the
-// visualisation's, lit one by one as that stage's scan progresses. While
+// A stepper across the top tracks the same stages, each marked by a square
+// cell: filled in the accent once passed, in the hot colour (pulsing
+// unless motion is reduced) while current, and outlined until reached.
+// The line from each stage to the next is a row of smaller square cells,
+// like the visualisation's, lit one by one as that stage's scan
+// progresses. While
 // recording, the cells after REC empty in the warning colour through the
 // last seconds before an automatic stop.
 //
@@ -85,6 +88,11 @@ Item {
     // The padding round the card's contents.
     readonly property real pad: 24
 
+    // The stage markers' and indicator lights' cells, and their outline,
+    // in device pixels.
+    readonly property int markerPx: Math.max(3, Math.round(7 * dpr))
+    readonly property int hairPx: Math.max(1, Math.round(dpr))
+
     function repaint() {
         viz.requestPaint();
         brackets.requestPaint();
@@ -141,6 +149,20 @@ Item {
     function css(c, a) {
         return "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + ","
             + Math.round(c.b * 255) + "," + (a === undefined ? 1 : a) + ")";
+    }
+
+    // A square cell marking a stage or an indicator light, a little larger
+    // than the stepper's connector cells: filled when lit, outlined in the
+    // dim colour when not. Sized and centred in whole device pixels.
+    component Marker: Rectangle {
+        property bool lit: false
+        property color litColor: card.cAccent
+        width: card.markerPx / card.dpr
+        height: width
+        y: card.snap(((parent ? parent.height : height) - height) / 2)
+        color: lit ? litColor : "transparent"
+        border.width: card.hairPx / card.dpr
+        border.color: lit ? litColor : card.cDim
     }
 
     component Label: Text {
@@ -210,16 +232,9 @@ Item {
                             }
                         }
                     }
-                    Rectangle {
-                        width: card.snap(9)
-                        height: width
-                        radius: width / 2
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: step.index < card.stage ? card.cAccent
-                            : step.index === card.stage ? card.cHot
-                            : "transparent"
-                        border.width: 1
-                        border.color: step.index <= card.stage ? card.cAccent : card.cDim
+                    Marker {
+                        lit: step.index <= card.stage
+                        litColor: step.index === card.stage ? card.cHot : card.cAccent
                         opacity: step.index === card.stage && card.stage < 3 && !card.calm
                             ? 0.55 + 0.45 * Math.abs(Math.sin(card.hud.now / 320)) : 1
                     }
@@ -282,8 +297,8 @@ Item {
         Row {
             visible: card.stage === 0 && !card.compact
             anchors.right: parent.right
-            anchors.verticalCenter: subtitleText.verticalCenter
-            spacing: 14
+            y: card.snap(subtitleText.y + (subtitleText.height - height) / 2)
+            spacing: card.snap(14)
             Repeater {
                 model: [
                     { name: "MIC", key: "mic" },
@@ -296,19 +311,15 @@ Item {
                         : modelData.key === "voice" ? card.hud.voiceLit
                         : card.hud.clipLit
                     readonly property color litColor: modelData.key === "clip" ? card.cWarn : card.cHot
-                    spacing: 6
-                    Rectangle {
-                        width: 7
-                        height: 7
-                        radius: 1
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: parent.lit ? parent.litColor : "transparent"
-                        border.width: 1
-                        border.color: parent.lit ? parent.litColor : card.cDim
+                    spacing: card.snap(6)
+                    Marker {
+                        lit: parent.lit
+                        litColor: parent.litColor
                         Behavior on color { ColorAnimation { duration: 120 } }
                     }
                     Label {
                         text: parent.modelData.name
+                        width: Math.ceil(implicitWidth * card.dpr) / card.dpr
                         anchors.verticalCenter: parent.verticalCenter
                         font.pixelSize: 11
                         color: parent.lit ? card.cText : card.cMuted
