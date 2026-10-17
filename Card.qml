@@ -11,9 +11,10 @@
 //        length of the transcript's words
 //   OUT  the words typed out as runs of cells behind a block cursor; the
 //        subtitle gives the word count and whether the LLM cleaned the text
-// A stepper across the top tracks the same stages: the line from each
-// stage to the next fills as that stage's scan progresses. While
-// recording, the line after REC drains in the warning colour through the
+// A stepper across the top tracks the same stages. The line from each
+// stage to the next is a row of small square cells, like the
+// visualisation's, lit one by one as that stage's scan progresses. While
+// recording, the cells after REC empty in the warning colour through the
 // last seconds before an automatic stop.
 //
 // The compact setting drops the title and subtitle (and the lights beside
@@ -97,7 +98,8 @@ Item {
 
     // How far the stepper's line into step i (from step i - 1) is filled:
     // full once step i is reached, and following the scan of the stage
-    // before it while that stage runs.
+    // before it while that stage runs (or the countdown, for the line
+    // after REC).
     function connectorFill(i) {
         if (i <= stage) return 1;
         if (i !== stage + 1) return 0;
@@ -161,9 +163,10 @@ Item {
     Item {
         id: chrome
         anchors.fill: parent
-        anchors.margins: card.pad
+        anchors.margins: card.snap(card.pad)
 
-        // Stepper: REC - STT - LLM - OUT.
+        // Stepper: REC - STT - LLM - OUT. Every width and spacing in it is
+        // whole device pixels, so the connectors' cells land on them.
         Row {
             id: stepper
             anchors.left: parent.left
@@ -175,25 +178,42 @@ Item {
                     id: step
                     required property int index
                     required property string modelData
-                    spacing: 8
-                    // The line into this step, filled from the left.
-                    Rectangle {
+                    spacing: card.snap(8)
+                    // The line into this step: a row of square cells, lit
+                    // from the left as it fills. Sizes are in device pixels.
+                    Item {
+                        id: connector
                         visible: step.index > 0
-                        width: 34
-                        height: card.snap(2)
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: card.cDim
-                        Rectangle {
-                            readonly property bool warning: step.index === 1 && card.stage === 0 && card.countdown >= 0
-                            width: card.snap(parent.width * card.connectorFill(step.index))
-                            height: parent.height
-                            color: warning ? card.cWarn : card.cAccent
+                        readonly property int cellPx: Math.max(2, Math.round(4 * card.dpr))
+                        readonly property int gapPx: Math.max(1, Math.round(2 * card.dpr))
+                        readonly property int widthPx: Math.round(34 * card.dpr)
+                        readonly property int count: Math.max(1, Math.floor((widthPx + gapPx) / (cellPx + gapPx)))
+                        readonly property int leftPx: Math.floor((widthPx - (count * (cellPx + gapPx) - gapPx)) / 2)
+                        // The countdown empties its cells, each staying lit
+                        // until its share of the time is gone.
+                        readonly property bool warning: step.index === 1 && card.stage === 0 && card.countdown >= 0
+                        readonly property real fill: card.connectorFill(step.index)
+                        readonly property int lit: warning ? Math.ceil(fill * count - 1e-6)
+                            : Math.floor(fill * count + 1e-6)
+                        width: widthPx / card.dpr
+                        height: cellPx / card.dpr
+                        y: card.snap((step.height - height) / 2)
+                        Repeater {
+                            model: connector.count
+                            Rectangle {
+                                required property int index
+                                x: (connector.leftPx + index * (connector.cellPx + connector.gapPx)) / card.dpr
+                                width: connector.cellPx / card.dpr
+                                height: width
+                                color: index >= connector.lit ? card.cDim
+                                    : connector.warning ? card.cWarn : card.cAccent
+                            }
                         }
                     }
                     Rectangle {
-                        width: 9
-                        height: 9
-                        radius: 4.5
+                        width: card.snap(9)
+                        height: width
+                        radius: width / 2
                         anchors.verticalCenter: parent.verticalCenter
                         color: step.index < card.stage ? card.cAccent
                             : step.index === card.stage ? card.cHot
@@ -205,13 +225,14 @@ Item {
                     }
                     Label {
                         text: step.modelData
+                        width: Math.ceil(implicitWidth * card.dpr) / card.dpr
                         anchors.verticalCenter: parent.verticalCenter
                         font.bold: step.index === card.stage
                         color: step.index === card.stage ? card.cText
                             : step.index < card.stage ? card.cAccent
                             : card.cMuted
                     }
-                    Item { width: 4; height: 1 }
+                    Item { width: card.snap(4); height: 1 }
                 }
             }
         }
