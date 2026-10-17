@@ -1,0 +1,75 @@
+#!/bin/bash
+
+# Run this plugin's test suite without a compositor, a shell or a screen:
+#
+#   tests/tst_*.qml      Qt Quick Test: the pure JavaScript (timing,
+#                        spectrum, post-process parsing, input sanitising,
+#                        command building) and Card.qml's text
+#   tests/*.test.mjs     Node: the command lines Helper.js builds, executed
+#                        for real under bash and coreutils
+#   tests/*.sh           shell checks
+#
+# The visual harness under tests/harness/ needs a running Wayland session
+# and is not part of this; run it by hand (tests/harness/run.sh).
+#
+# Everything a test writes goes to one scratch directory, made here under
+# ${XDG_CACHE_HOME:-~/.cache} and removed afterwards.
+#
+# Usage: scripts/test [qmltestrunner arguments]
+
+set -uo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_DIR" || exit 1
+
+runner=""
+for candidate in qmltestrunner qmltestrunner6 /usr/lib/qt6/bin/qmltestrunner /usr/lib/qt6/libexec/qmltestrunner; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    runner=$candidate
+    break
+  fi
+done
+
+if [[ -z $runner ]]; then
+  echo "test: no qmltestrunner found (install qt6-declarative, or qml6-module-qttest)" >&2
+  exit 2
+fi
+
+cache=${XDG_CACHE_HOME:-${HOME:?HOME is not set}/.cache}
+mkdir -p -- "$cache" || exit 1
+scratch=$(mktemp -d "$cache/voxscope-test.XXXXXX") || exit 1
+trap 'rm -rf -- "$scratch"' EXIT
+export VOXSCOPE_TEST_SCRATCH=$scratch
+# Anything that asks for a temporary file gets one in the scratch directory.
+export TMPDIR=$scratch
+
+# No display is needed and none should be required: these tests touch no
+# real window, and a runner that waits for a compositor would hang in CI.
+export QT_QPA_PLATFORM=offscreen
+
+status=0
+
+shopt -s nullglob
+qml_tests=(tests/tst_*.qml)
+node_tests=(tests/*.test.mjs)
+shell_tests=(tests/*.sh)
+shopt -u nullglob
+
+for qml_test in "${qml_tests[@]}"; do
+  "$runner" -input "$qml_test" "$@" || status=1
+done
+
+if ((${#node_tests[@]} > 0)); then
+  if command -v node >/dev/null 2>&1; then
+    node --test "${node_tests[@]}" || status=1
+  else
+    echo "test: node not found; skipped ${node_tests[*]}" >&2
+    status=1
+  fi
+fi
+
+for shell_test in "${shell_tests[@]}"; do
+  bash "$shell_test" || status=1
+done
+
+exit $status
