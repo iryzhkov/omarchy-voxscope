@@ -93,6 +93,12 @@ def full_name(model: str) -> str:
     return model if ":" in model else model + ":latest"
 
 
+def display_name(model: str) -> str:
+    """The name reported in the status file: Ollama's implicit `:latest`
+    tag is dropped, any other tag is kept."""
+    return model[: -len(":latest")] if model.endswith(":latest") else model
+
+
 def ollama_get(path: str):
     with urllib.request.urlopen(
         f"{OLLAMA_BASE}{path}", timeout=PS_TIMEOUT_SECS
@@ -240,7 +246,7 @@ def main() -> None:
     if os.environ.get("VOXTYPE_CLEAN_LLM") != "0":
         model, loaded = pick_model()
         if model and loaded:
-            report("llm", model=model, timeout=TIMEOUT_SECS,
+            report("llm", model=display_name(model), timeout=TIMEOUT_SECS,
                    llm_t=time.time() * 1000)
             used_model = model
             cleaned = llm_clean(raw, model)
@@ -252,7 +258,8 @@ def main() -> None:
             reason = "unreachable"
     output = cleaned if cleaned is not None else fallback
     report("done", cleaned=cleaned is not None, reason=reason,
-           words=len(output.split()), model=used_model,
+           words=len(output.split()),
+           model=display_name(used_model) if used_model else None,
            lens=word_lens(output))
     sys.stdout.write(output)
 

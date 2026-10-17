@@ -60,7 +60,7 @@ the clock.
 | `raw_lens` | array of integers| `start`      | Length in characters of each word of the raw transcript, split on whitespace; at most 400 entries. |
 | `words_in` | integer          | `start`      | Number of words in the raw transcript. |
 | `llm_t`    | number, ms       | `llm`        | When the LLM request was sent. |
-| `model`    | string or null   | `llm`, `done`| The LLM model name, such as `qwen3:4b`; a `:latest` suffix is not shown. `done` sets it to null when no model was used. |
+| `model`    | string or null   | `llm`, `done`| The LLM model name as shown to the user, such as `qwen3:4b`. Ollama's implicit `:latest` tag is left off (`llama3.2`, not `llama3.2:latest`); any other tag is kept. `done` sets it to null when no model was used. |
 | `timeout`  | number, seconds  | `llm`        | How long the script waits for the LLM before giving up. |
 | `cleaned`  | boolean          | `done`       | True when the output is the LLM's cleaned text, false when it is the raw transcript. |
 | `reason`   | string           | `done`       | Why the output is what it is: `"ok"` (cleaned), `"rejected"` (the LLM answered but the answer was discarded), `"loading"` (the model was not loaded yet), `"unreachable"` (no server or no model), `"disabled"` (LLM cleanup turned off). |
