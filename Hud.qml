@@ -28,8 +28,10 @@
 //
 // Transitions. The card fades and scales in as the window appears, and
 // fades out over its last frame when a dictation ends, the window staying
-// mapped until it has (see `fading`). A dictation that turns out to be
-// suppressed, or a stale state, hides it at once instead.
+// mapped until it has (see `fading`). A dictation that starts during the
+// fade takes the window over as it would during the linger, the fade
+// cancelled. A dictation that turns out to be suppressed, or a stale
+// state, hides it at once instead, as does a marker arriving mid-fade.
 //
 // Suppression. A dictation started with `voxtype record start --no-osd` is
 // never shown, not even during the linger, although Voxtype removes its
@@ -172,13 +174,15 @@ Item {
     property bool settling: false
     readonly property int settleMs: 80
     // Set while settling if the window was up for the previous dictation
-    // (recording again during its linger): the window stays mapped and
-    // keeps that dictation's last frame (see heldFrame), so an ordinary
-    // re-record neither unmaps it nor draws REC before the marker could
-    // have appeared. A marker that appears meanwhile clears it at once.
+    // (recording again during its linger or its fade-out): the window stays
+    // mapped and keeps that dictation's last frame (see heldFrame), so an
+    // ordinary re-record neither unmaps it nor draws REC before the marker
+    // could have appeared. A marker that appears meanwhile clears it at
+    // once.
     property bool holding: false
     // Set while the card fades out after the dictation ended; the window
     // stays mapped, showing the last frame, until the fade has finished.
+    // A new dictation or a marker cancels it.
     property bool fading: false
     readonly property int appearMs: 120
     readonly property int fadeMs: 180
@@ -344,12 +348,14 @@ Item {
     }
 
     onMarkerPresentChanged: {
-        // While settling the marker is only looked at when that ends.
-        if (settling) {
-            if (markerPresent) holding = false;
-        } else if (markerPresent && inDictation) {
-            suppressed = true;
-        }
+        if (!markerPresent) return;
+        // The marker belongs to a dictation that must not be shown, so the
+        // window goes at once: no held frame and no fade. While settling
+        // the marker is otherwise only looked at when that ends.
+        if (settling) holding = false;
+        else if (inDictation) suppressed = true;
+        fading = false;
+        updateWindow();
     }
 
     Timer {
@@ -390,9 +396,12 @@ Item {
 
         // What `shown` is made of is assigned so that it can only go true
         // once everything is in place: settling first, stalled last. The
-        // window is held before `shown` goes false, so it stays mapped.
+        // window is held before `shown` goes false, so it stays mapped. A
+        // window still fading out is held too, and the fade cancelled, so
+        // the held frame is fully visible again.
         if (starts) {
-            holding = holding || wasShown;
+            holding = holding || wasShown || fading;
+            fading = false;
             settling = true;
             settleTimer.restart();
         }

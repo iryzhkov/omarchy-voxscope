@@ -11,7 +11,8 @@
 #
 # Scenarios (see shell.qml): pipeline, fastidle, relinger, noscript,
 # silence, cap, cava, quiet, loud, suppressed, suppressedrelinger,
-# oldmarker, latemarker, nobridge, stale, latedir.
+# fadesuppressed, faderecord, oldmarker, latemarker, nobridge, stale,
+# latedir.
 # "cava" points PipeWire and Pulse at the real session so cava can listen
 # to the default microphone. "quiet" and "loud" feed the spectrum from
 # fake-cava.py instead; "quiet" starts from a saved calibration left high
@@ -39,9 +40,9 @@ set -euo pipefail
 
 scenario=${1:-}
 case $scenario in
-  pipeline | fastidle | relinger | noscript | silence | cap | cava | quiet | loud | suppressed | suppressedrelinger | oldmarker | latemarker | nobridge | stale | latedir) ;;
+  pipeline | fastidle | relinger | noscript | silence | cap | cava | quiet | loud | suppressed | suppressedrelinger | fadesuppressed | faderecord | oldmarker | latemarker | nobridge | stale | latedir) ;;
   *)
-    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava|quiet|loud|suppressed|suppressedrelinger|oldmarker|latemarker|nobridge|stale|latedir" >&2
+    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava|quiet|loud|suppressed|suppressedrelinger|fadesuppressed|faderecord|oldmarker|latemarker|nobridge|stale|latedir" >&2
     exit 2
     ;;
 esac
@@ -122,4 +123,4 @@ env "${audio_env[@]}" XDG_RUNTIME_DIR="$run/runtime" WAYLAND_DISPLAY="$wayland" 
   timeout 40 quickshell -p "$run/app/shell.qml" >"$run/log.txt" 2>&1 || status=$?
 
 echo "$scenario: exit $status, output in $run"
-sed -E 's/\x1b\[[0-9;]*m//g' "$run/log.txt" | grep -E 'qml: (FRAME|CHECK|FAIL|WINDOW|LIVE|HOLD)' | sed -E 's/.*qml: /  /' || true
+sed -E 's/\x1b\[[0-9;]*m//g' "$run/log.txt" | grep -E 'qml: (FRAME|CHECK|FAIL|WINDOW|LIVE|HOLD|FADE|AWAIT)' | sed -E 's/.*qml: /  /' || true

@@ -6,7 +6,8 @@
 // postprocess.json at set times, feeds the HUD a fake audio bridge, grabs
 // frames of the card, and logs the HUD's state every 50 ms (TRACE lines),
 // the window mapping and unmapping (WINDOW), the audio bridge and cava
-// being allowed to run or not (LIVE), the window being held (HOLD), what it saved (FRAME) and what it
+// being allowed to run or not (LIVE), the window being held (HOLD), its
+// fade-out starting and stopping (FADE), what it saved (FRAME) and what it
 // checked (CHECK, FAIL).
 
 import QtQuick
@@ -48,6 +49,11 @@ ShellRoot {
 
     property real t0: 0
     property int next: 0
+    // An "await" step pauses the script until the HUD starts fading out;
+    // the steps after it are then timed as if the fade had started at the
+    // await step's time, `shift` ms later than written.
+    property real shift: 0
+    property real fadeStartedAt: -1
     property var lens: [5, 3, 7, 2, 4, 9, 3, 5, 6, 2, 4, 8, 3, 5, 4, 6, 2, 7, 5, 3, 4, 6]
     // Fields reported so far, carried by every postprocess.json write as
     // the protocol requires.
@@ -161,6 +167,53 @@ ShellRoot {
             [8300, "pp", "done-raw"],
             [8600, "state", "idle"],
             [11500, "quit", ""]
+        ],
+        // A `--no-osd` recording started 10 ms into an ordinary dictation's
+        // fade-out, its marker 30 ms after the state: the window, held for
+        // the settling, hides as the marker arrives, without finishing the
+        // fade, drawing REC or running the bridge.
+        fadesuppressed: [
+            [0, "state", "recording"],
+            [2500, "state", "transcribing"],
+            [2690, "pp", "start"],
+            [2730, "pp", "llm"],
+            [3950, "pp", "done"],
+            [4550, "state", "idle"],
+            [4600, "await", "fade"],
+            [4600, "clear", ""],
+            [4610, "state", "recording"],
+            [4640, "marker", "on"],
+            [4800, "check", "never-shown"],
+            [4800, "check", "hidden-now"],
+            [5200, "state", "transcribing"],
+            [5500, "state", "idle"],
+            [5520, "marker", "off"],
+            [6000, "check", "never-shown"],
+            [6200, "quit", ""]
+        ],
+        // An ordinary recording started 140 ms into the previous
+        // dictation's 180 ms fade-out: the window must be held for the
+        // settling, the fade cancelled, and never unmap before the last
+        // idle.
+        faderecord: [
+            [0, "state", "recording"],
+            [2500, "state", "transcribing"],
+            [2690, "pp", "start"],
+            [2730, "pp", "llm"],
+            [3950, "pp", "done"],
+            [4550, "state", "idle"],
+            [4600, "await", "fade"],
+            [4740, "state", "recording"],
+            [4940, "check", "holding"],
+            [4940, "check", "rerecord"],
+            [4940, "check", "opaque"],
+            [5000, "grab", "rerecord"],
+            [6500, "state", "transcribing"],
+            [6700, "pp", "start"],
+            [7000, "pp", "done-raw"],
+            [7300, "check", "no-unmap"],
+            [7400, "state", "idle"],
+            [9500, "quit", ""]
         ],
         // A `--no-osd` recording started during an ordinary dictation's
         // linger, its marker 30 ms after the state: the window, held for the
@@ -335,11 +388,28 @@ ShellRoot {
             if (holding) {
                 harness.sawHolding = true;
                 Qt.callLater(function() {
-                    harness.heldCleanly = hud.holding && hud.windowShown && !hud.shown && !hud.live;
-                    if (harness.scenario === "relinger") harness.grab(hud.windowItem, "held");
+                    harness.heldCleanly = hud.holding && hud.windowShown && !hud.shown && !hud.live
+                        && !hud.fading;
+                    if (harness.scenario === "relinger" || harness.scenario === "faderecord")
+                        harness.grab(hud.windowItem, "held");
                 });
             }
             console.log("HOLD " + (holding ? "started" : "ended") + " at " + (Date.now() - harness.t0) + " ms");
+        }
+        onFadingChanged: {
+            const e = Date.now() - harness.t0;
+            if (fading) harness.fadeStartedAt = e;
+            console.log("FADE " + (fading ? "started" : "stopped") + " at " + e + " ms, opacity "
+                + hud.windowItem.opacity.toFixed(2));
+        }
+        // A marker hides the window at once, whatever it was doing.
+        onMarkerPresentChanged: {
+            if (!markerPresent) return;
+            Qt.callLater(function() {
+                const ok = !hud.windowShown && !hud.fading && !hud.holding;
+                console.log((ok ? "CHECK" : "FAIL") + " marker hid the window at once: window "
+                    + hud.windowShown + ", fading " + hud.fading + ", holding " + hud.holding);
+            });
         }
         onLiveChanged: {
             if (live) harness.sawLive = true;
@@ -487,6 +557,11 @@ ShellRoot {
             console.log((ok ? "CHECK" : "FAIL") + " window held while the re-record settled: held "
                 + sawHolding + ", mapped with nothing drawn or live " + heldCleanly
                 + ", unmaps " + unmaps);
+        } else if (what === "opaque") {
+            const ok = !hud.fading && hud.windowItem.opacity >= 0.999 && hud.windowItem.scale >= 0.999;
+            console.log((ok ? "CHECK" : "FAIL") + " fade-out cancelled by the re-record: fading "
+                + hud.fading + ", opacity " + hud.windowItem.opacity.toFixed(3) + ", scale "
+                + hud.windowItem.scale.toFixed(3));
         } else if (what === "unsuppressed") {
             const ok = !hud.suppressed && !hud.markerPresent && hud.live;
             console.log((ok ? "CHECK" : "FAIL") + " marker removed during the settling left the"
@@ -564,8 +639,16 @@ ShellRoot {
             if (harness.t0 === 0) harness.t0 = now;
             const e = now - harness.t0;
             const script = harness.scripts[harness.scenario];
-            while (harness.next < script.length && e >= script[harness.next][0]) {
+            while (harness.next < script.length && e >= script[harness.next][0] + harness.shift) {
                 const step = script[harness.next];
+                if (step[1] === "await") {
+                    if (harness.fadeStartedAt < 0) break;
+                    harness.shift = harness.fadeStartedAt - step[0];
+                    console.log("AWAIT fade seen at " + harness.fadeStartedAt + " ms, later steps "
+                        + harness.shift + " ms late");
+                    harness.next++;
+                    continue;
+                }
                 harness.next++;
                 harness.run(step[1], step[2]);
             }
