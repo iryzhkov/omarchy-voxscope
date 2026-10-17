@@ -16,6 +16,13 @@ Configuration, all optional, from the environment:
   VOXTYPE_CLEAN_MODEL    cleanup model, or a comma-separated list of
                          candidates; the first one installed wins
                          (default qwen3:4b)
+  VOXTYPE_CLEAN_SAME_WEIGHTS  comma-separated other Ollama model names built
+                         from the same weights as the candidates (for
+                         example a variant with a different template);
+                         Ollama serves them from one loaded runner and
+                         lists it under whichever name loaded it, so one
+                         of these resident also counts as loaded
+                         (default none)
   VOXTYPE_CLEAN_TIMEOUT  seconds to wait for the cleanup (default 5)
   VOXTYPE_CLEAN_LLM      set to 0 to skip the LLM and only collapse lines
 
@@ -76,12 +83,16 @@ def env_base() -> str:
     return "http://localhost:11434"
 
 
-def env_models() -> list[str]:
-    """Candidate models: at most eight names of the usual characters."""
-    raw = os.environ.get("VOXTYPE_CLEAN_MODEL", "qwen3:4b")[:1024]
+def env_names(variable: str, default: str) -> list[str]:
+    """Model names from `variable`: at most eight of the usual characters."""
+    raw = os.environ.get(variable, default)[:1024]
     names = [m.strip() for m in raw.split(",")]
-    names = [m for m in names if re.fullmatch(r"[A-Za-z0-9._:/@+-]{1,128}", m)]
-    return names[:8] or ["qwen3:4b"]
+    return [m for m in names if re.fullmatch(r"[A-Za-z0-9._:/@+-]{1,128}", m)][:8]
+
+
+def env_models() -> list[str]:
+    """Candidate models, qwen3:4b when none is valid."""
+    return env_names("VOXTYPE_CLEAN_MODEL", "qwen3:4b") or ["qwen3:4b"]
 
 
 def env_timeout() -> float:
@@ -96,6 +107,7 @@ def env_timeout() -> float:
 OLLAMA_BASE = env_base()
 # A comma-separated list is accepted; the first candidate installed wins.
 MODELS = env_models()
+SAME_WEIGHTS = env_names("VOXTYPE_CLEAN_SAME_WEIGHTS", "")
 TIMEOUT_SECS = env_timeout()
 PS_TIMEOUT_SECS = 1.5
 KEEP_ALIVE = "2h"
@@ -146,17 +158,19 @@ PROMPT_END = "\n</transcript>"
 CONTROLS = re.compile("[\\x00-\\x09\\x0b-\\x1f\\x7f-\\x9f\\u2028\\u2029]")
 # Line breaks other than a plain newline, which a model may use instead.
 LINE_BREAKS = re.compile("\\r\\n?|[\\x0b\\x0c\\x85\\u2028\\u2029]")
-# The zero-width joiner, the one formatting character kept: emoji sequences
-# such as a family or a profession are joined by it.
-ZWJ = "\N{ZERO WIDTH JOINER}"
+# The formatting characters kept: the zero-width joiner, which joins emoji
+# sequences such as a family or a profession, and the zero-width non-joiner,
+# which Persian, Kurdish and some Indic spellings need. Neither reorders or
+# hides text.
+KEPT_FORMAT = {"\N{ZERO WIDTH JOINER}", "\N{ZERO WIDTH NON-JOINER}"}
 
 
 def invisible(c: str) -> bool:
     """Whether `c` is a formatting character that is never typed: Unicode
     category Cf (bidirectional controls, zero-width characters, the byte
-    order mark, tags) other than the zero-width joiner, or any code point in
-    the tag block, assigned or not."""
-    return c != ZWJ and (unicodedata.category(c) == "Cf" or "\U000e0000" <= c <= "\U000e007f")
+    order mark, tags) other than the zero-width joiner and non-joiner, or any
+    code point in the tag block, assigned or not."""
+    return c not in KEPT_FORMAT and (unicodedata.category(c) == "Cf" or "\U000e0000" <= c <= "\U000e007f")
 
 
 def drop_controls(text: str) -> str:
@@ -266,9 +280,10 @@ def pick_model() -> tuple[str | None, bool]:
     except Exception:
         return None, False
     wanted = [full_name(m) for m in MODELS]
+    same = {full_name(m) for m in SAME_WEIGHTS}
     for name in wanted:
         for m in running:
-            if m.get("name") == name:
+            if m.get("name") == name or m.get("name") in same:
                 size = m.get("size")
                 vram = m.get("size_vram")
                 if (isinstance(size, (int, float)) and isinstance(vram, (int, float))
@@ -341,6 +356,10 @@ def llm_clean(text: str, model: str) -> str | None:
     # below like one rather than typed as itself: a carriage return would be
     # a bare Return, which submits a prompt.
     answer = LINE_BREAKS.sub("\n", answer)
+    # Drop control and invisible characters before the whitespace is
+    # normalised, so one hidden between spaces or newlines cannot leave a
+    # run of them behind.
+    answer = drop_controls(answer)
     # Small models sometimes prepend "Here is the corrected text:" — drop it.
     answer = re.sub(
         r"^\s*here('?s| is)?\b[^:\n]*:\s*", "", answer, flags=re.IGNORECASE

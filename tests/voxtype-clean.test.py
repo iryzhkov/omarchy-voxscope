@@ -43,14 +43,15 @@ assert os.lstat(SCRATCH).st_uid == os.getuid(), SCRATCH
 # What the script must never type: every C0 and C1 control character but the
 # newline, the Unicode line and paragraph separators, and every invisible
 # formatting character (category Cf, and the whole tag block) but the
-# zero-width joiner.
+# zero-width joiner and non-joiner.
 FORBIDDEN = {chr(c) for c in [*range(0x00, 0x0a), *range(0x0b, 0x20), *range(0x7f, 0xa0), 0x2028, 0x2029]}
 FORBIDDEN |= {chr(c) for c in range(0x80, 0x110000)
-              if unicodedata.category(chr(c)) == "Cf" or 0xE0000 <= c <= 0xE007F} - {"\N{ZERO WIDTH JOINER}"}
+              if unicodedata.category(chr(c)) == "Cf" or 0xE0000 <= c <= 0xE007F} - {"\N{ZERO WIDTH JOINER}",
+                                                                         "\N{ZERO WIDTH NON-JOINER}"}
 # A sample of those formatting characters: right-to-left override, the
-# isolates, the Arabic letter mark, zero-width space and non-joiner, word
-# joiner, soft hyphen, byte order mark, and tag characters.
-INVISIBLE = "".join(map(chr, [0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0x061C, 0x200B, 0x200C, 0x2060,
+# isolates, the Arabic letter mark, zero-width space, word joiner, soft
+# hyphen, byte order mark, and tag characters.
+INVISIBLE = "".join(map(chr, [0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0x061C, 0x200B, 0x2060,
                                0x00AD, 0xFEFF, 0xE0001, 0xE0041, 0xE007F]))
 # Emoji sequences that need the zero-width joiner and variation selector.
 EMOJI = ("\U0001f468\N{ZERO WIDTH JOINER}\U0001f469\N{ZERO WIDTH JOINER}\U0001f467 "
@@ -242,6 +243,19 @@ class VoxtypeClean(unittest.TestCase):
                               VOXTYPE_CLEAN_LLM="0")
         self.assert_typeable(out)
         self.assertEqual(out, f"hello there friend {EMOJI}")
+
+    def test_zero_width_non_joiner_is_kept_for_spellings_that_need_it(self):
+        # Persian "mi-khaham" is spelled with a non-joiner after its prefix.
+        word = "\N{ARABIC LETTER MEEM}\N{ARABIC LETTER FARSI YEH}\N{ZERO WIDTH NON-JOINER}\N{ARABIC LETTER KHAH}"
+        out = self.run_script(f"salam {word} doost".encode(), VOXTYPE_CLEAN_LLM="0")
+        self.assertEqual(out, f"salam {word} doost")
+
+    def test_invisible_characters_between_line_breaks_leave_no_extra_blank_lines(self):
+        self.ollama.answer = ("One two three.\n\N{ZERO WIDTH SPACE}\n\N{ZERO WIDTH SPACE}\n"
+                              "Four five six.  \N{ZERO WIDTH SPACE}  seven.")
+        out = self.run_script(b"one two three four five six seven")
+        self.assertEqual(self.status()["reason"], "ok")
+        self.assertEqual(out, "One two three.\n\nFour five six. seven.")
 
     def test_invisible_formatting_never_reaches_the_output_of_an_oversized_transcript(self):
         data = ("a\N{RIGHT-TO-LEFT OVERRIDE}b\U000e0041 " + EMOJI + " ").encode() * 60000

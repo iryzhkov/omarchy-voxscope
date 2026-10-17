@@ -187,7 +187,10 @@ timeout_ms = 8000
 It reads its settings from the environment of the Voxtype daemon:
 `VOXTYPE_CLEAN_BASE` (the Ollama URL, default `http://localhost:11434`),
 `VOXTYPE_CLEAN_MODEL` (default `qwen3:4b`; a comma-separated list picks the
-first one installed), `VOXTYPE_CLEAN_TIMEOUT` (seconds, default 5) and
+first one installed), `VOXTYPE_CLEAN_SAME_WEIGHTS` (other model names built
+from the same weights, such as a variant with a different template; Ollama
+serves them from one loaded copy, so one of them being loaded counts as the
+model being loaded), `VOXTYPE_CLEAN_TIMEOUT` (seconds, default 5) and
 `VOXTYPE_CLEAN_LLM=0` to skip the LLM.
 
 To report stages from a script of your own, see
