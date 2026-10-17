@@ -7,6 +7,8 @@
 #                        command building) and Card.qml's text
 #   tests/*.test.mjs     Node: the command lines Helper.js builds, executed
 #                        for real under bash and coreutils
+#   tests/*.test.py      Python: the example post-process script, run
+#                        against a stub Ollama server on loopback
 #   tests/*.sh           shell checks
 #
 # The visual harness under tests/harness/ needs a running Wayland session
@@ -52,6 +54,7 @@ status=0
 shopt -s nullglob
 qml_tests=(tests/tst_*.qml)
 node_tests=(tests/*.test.mjs)
+python_tests=(tests/*.test.py)
 shell_tests=(tests/*.sh)
 shopt -u nullglob
 
@@ -67,6 +70,11 @@ if ((${#node_tests[@]} > 0)); then
     status=1
   fi
 fi
+
+# -I: no user site or PYTHON* variables; -B: no __pycache__ beside the tests.
+for python_test in "${python_tests[@]}"; do
+  python3 -I -B "$python_test" || status=1
+done
 
 for shell_test in "${shell_tests[@]}"; do
   bash "$shell_test" || status=1
