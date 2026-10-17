@@ -9,9 +9,9 @@ being typed, each paced to finish with the real work.
 ## What it does
 
 A themed card appears in the middle of the focused screen while Voxtype is
-recording or transcribing. A stepper across the top (REC, STT, LLM, OUT) and a
-progress bar along the bottom follow the pipeline, and the middle shows each
-stage in its own way:
+recording or transcribing. A stepper across the top (REC, STT, LLM, OUT)
+follows the pipeline, the line from each stage to the next filling as that
+stage progresses, and the middle shows each stage in its own way:
 
 - **Listening.** A mirrored live spectrum of the microphone with held peaks,
   and indicator lights for input, voice and clipping. Meanwhile the loudness
@@ -38,7 +38,8 @@ never takes keyboard focus and lets clicks through to whatever is underneath.
 
 While recording it also counts down the last ten seconds before Voxtype's
 recording cap (`audio.max_duration_secs`), and it can stop a recording after
-ten seconds without voice (see below).
+ten seconds without voice (see below). A countdown shows in the subtitle and
+drains the stepper's line after REC in the theme's red.
 
 ## Requirements
 

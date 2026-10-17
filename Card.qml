@@ -11,8 +11,10 @@
 //        length of the transcript's words
 //   OUT  the words typed out as runs of cells behind a block cursor; the
 //        subtitle gives the word count and whether the LLM cleaned the text
-// A stepper across the top and a progress bar along the bottom track the
-// same stages.
+// A stepper across the top tracks the same stages: the line from each
+// stage to the next fills as that stage's scan progresses. While
+// recording, the line after REC drains in the warning colour through the
+// last seconds before an automatic stop.
 //
 // Only the visualisation glows; the text and the stepper stay crisp. The
 // visualisation is drawn on a grid of whole device pixels, and its layer
@@ -71,15 +73,29 @@ Item {
 
     readonly property int stage: hud.stage
 
-    // The padding round the card's contents, and what the visualisation
-    // leaves at the bottom for the progress bar.
+    // The padding round the card's contents.
     readonly property real pad: 24
-    readonly property real footer: 15
 
     function repaint() {
         viz.requestPaint();
-        progress.requestPaint();
         brackets.requestPaint();
+    }
+
+    // The countdown before an automatic stop, from 1 down to 0, or -1
+    // when none is running.
+    readonly property real countdown: hud.stopWarning ? Math.max(0, Math.min(1, hud.remaining / 10))
+        : hud.silenceWarning ? Math.max(0, Math.min(1, (hud.silenceStopSecs - hud.silentFor) / 5))
+        : -1
+
+    // How far the stepper's line into step i (from step i - 1) is filled:
+    // full once step i is reached, and following the scan of the stage
+    // before it while that stage runs.
+    function connectorFill(i) {
+        if (i <= stage) return 1;
+        if (i !== stage + 1) return 0;
+        if (stage === 0) return Math.max(0, countdown);
+        const p = stage === 1 ? hud.scanP1 : stage === 2 ? hud.scanP2 : 0;
+        return Math.max(0, Math.min(1, p));
     }
 
     function fmtClock(secs) {
@@ -152,12 +168,19 @@ Item {
                     required property int index
                     required property string modelData
                     spacing: 8
+                    // The line into this step, filled from the left.
                     Rectangle {
                         visible: step.index > 0
-                        width: 22
-                        height: 1
+                        width: 34
+                        height: card.snap(2)
                         anchors.verticalCenter: parent.verticalCenter
-                        color: step.index <= card.stage ? card.cAccent : card.cDim
+                        color: card.cDim
+                        Rectangle {
+                            readonly property bool warning: step.index === 1 && card.stage === 0 && card.countdown >= 0
+                            width: card.snap(parent.width * card.connectorFill(step.index))
+                            height: parent.height
+                            color: warning ? card.cWarn : card.cAccent
+                        }
                     }
                     Rectangle {
                         width: 9
@@ -257,53 +280,6 @@ Item {
             }
         }
 
-        // Progress, hidden while recording: the current scan's position
-        // while transcribing and refining, full when done.
-        Canvas {
-            id: progress
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 3
-            renderStrategy: Canvas.Cooperative
-
-            onPaint: {
-                const ctx = getContext("2d");
-                ctx.reset();
-                if (!card.hud) return;
-                const hud = card.hud;
-                const w = width;
-                const h = height;
-                // No bar while recording, so it doesn't read as a
-                // countdown, until the last seconds before voxtype's cap or
-                // the silence auto-stop, when it drains to zero.
-                if (card.stage === 0) {
-                    const left = hud.stopWarning ? hud.remaining / 10
-                        : hud.silenceWarning ? (hud.silenceStopSecs - hud.silentFor) / 5
-                        : -1;
-                    if (left >= 0) {
-                        ctx.fillStyle = card.css(card.cDim);
-                        ctx.fillRect(0, 0, w, h);
-                        ctx.fillStyle = card.css(card.cWarn);
-                        ctx.fillRect(0, 0, Math.max(0, Math.min(1, left)) * w, h);
-                    }
-                    return;
-                }
-                ctx.fillStyle = card.css(card.cDim);
-                ctx.fillRect(0, 0, w, h);
-
-                const to = Math.min(w, card.stage === 1 ? hud.scanP1 * w
-                    : card.stage === 2 ? hud.scanP2 * w
-                    : w);
-                if (to > 0) {
-                    const g = ctx.createLinearGradient(0, 0, to, 0);
-                    g.addColorStop(0, card.css(card.cAccent));
-                    g.addColorStop(1, card.css(card.cHot));
-                    ctx.fillStyle = g;
-                    ctx.fillRect(0, 0, to, h);
-                }
-            }
-        }
     }
 
     // The visualisation, drawn into its own layer on whole device pixels;
@@ -313,7 +289,7 @@ Item {
         x: card.snap(card.pad)
         y: card.snap(card.pad + subtitleText.y + subtitleText.height + 12)
         width: card.snap(card.width - 2 * card.pad)
-        height: card.snap(card.height - card.pad - card.footer) - y
+        height: card.snap(card.height - card.pad) - y
         layer.enabled: true
         visible: false
 
