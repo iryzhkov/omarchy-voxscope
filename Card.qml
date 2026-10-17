@@ -14,6 +14,11 @@
 // A stepper across the top and a progress bar along the bottom track the
 // same stages.
 //
+// Only the visualisation glows; the text and the stepper stay crisp. The
+// visualisation is drawn on a grid of whole device pixels, and its layer
+// sits on whole device pixels too, so cell edges stay sharp at fractional
+// scaling.
+//
 // Colour comes from the active Omarchy theme, which Hud.qml re-reads each
 // time the HUD appears. Everything is drawn in the theme's accent, mixed
 // towards the background or the text; light themes mix further, because
@@ -25,6 +30,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Effects
+import QtQuick.Window
 
 Item {
     id: card
@@ -32,8 +38,15 @@ Item {
     // The Hud.qml instance whose state this card draws.
     property var hud: null
 
-    implicitWidth: 580
-    implicitHeight: 268
+    // Device pixels per logical pixel on the screen the card is on.
+    readonly property real dpr: Screen.devicePixelRatio > 0 ? Screen.devicePixelRatio : 1
+    // A logical length or position rounded to whole device pixels.
+    function snap(v) {
+        return Math.round(v * dpr) / dpr;
+    }
+
+    implicitWidth: snap(580)
+    implicitHeight: snap(268)
 
     function mix(a, b, t) {
         return Qt.rgba(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
@@ -57,6 +70,11 @@ Item {
     readonly property string fontFamily: "monospace"
 
     readonly property int stage: hud.stage
+
+    // The padding round the card's contents, and what the visualisation
+    // leaves at the bottom for the progress bar.
+    readonly property real pad: 24
+    readonly property real footer: 15
 
     function repaint() {
         viz.requestPaint();
@@ -94,6 +112,11 @@ Item {
         return "RAW TRANSCRIPT" + words;
     }
 
+    function css(c, a) {
+        return "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + ","
+            + Math.round(c.b * 255) + "," + (a === undefined ? 1 : a) + ")";
+    }
+
     component Label: Text {
         textFormat: Text.PlainText
         font.family: card.fontFamily
@@ -106,18 +129,15 @@ Item {
         anchors.fill: parent
         radius: 6
         color: card.cBg
-        border.width: 1
+        border.width: card.snap(1)
         border.color: card.cDim
     }
 
-    // Everything that glows is drawn into `screen`; the MultiEffect below
-    // draws it again with a soft bloom.
+    // The text and the stepper, drawn as they are.
     Item {
-        id: screen
+        id: chrome
         anchors.fill: parent
-        anchors.margins: 24
-        layer.enabled: true
-        visible: false
+        anchors.margins: card.pad
 
         // Stepper: REC - STT - LLM - OUT.
         Row {
@@ -237,19 +257,76 @@ Item {
             }
         }
 
+        // Progress, hidden while recording: the current scan's position
+        // while transcribing and refining, full when done.
         Canvas {
-            id: viz
+            id: progress
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: subtitleText.bottom
-            anchors.topMargin: 12
-            anchors.bottom: progress.top
-            anchors.bottomMargin: 12
+            anchors.bottom: parent.bottom
+            height: 3
             renderStrategy: Canvas.Cooperative
 
-            function css(c, a) {
-                return "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + ","
-                    + Math.round(c.b * 255) + "," + (a === undefined ? 1 : a) + ")";
+            onPaint: {
+                const ctx = getContext("2d");
+                ctx.reset();
+                if (!card.hud) return;
+                const hud = card.hud;
+                const w = width;
+                const h = height;
+                // No bar while recording, so it doesn't read as a
+                // countdown, until the last seconds before voxtype's cap or
+                // the silence auto-stop, when it drains to zero.
+                if (card.stage === 0) {
+                    const left = hud.stopWarning ? hud.remaining / 10
+                        : hud.silenceWarning ? (hud.silenceStopSecs - hud.silentFor) / 5
+                        : -1;
+                    if (left >= 0) {
+                        ctx.fillStyle = card.css(card.cDim);
+                        ctx.fillRect(0, 0, w, h);
+                        ctx.fillStyle = card.css(card.cWarn);
+                        ctx.fillRect(0, 0, Math.max(0, Math.min(1, left)) * w, h);
+                    }
+                    return;
+                }
+                ctx.fillStyle = card.css(card.cDim);
+                ctx.fillRect(0, 0, w, h);
+
+                const to = Math.min(w, card.stage === 1 ? hud.scanP1 * w
+                    : card.stage === 2 ? hud.scanP2 * w
+                    : w);
+                if (to > 0) {
+                    const g = ctx.createLinearGradient(0, 0, to, 0);
+                    g.addColorStop(0, card.css(card.cAccent));
+                    g.addColorStop(1, card.css(card.cHot));
+                    ctx.fillStyle = g;
+                    ctx.fillRect(0, 0, to, h);
+                }
+            }
+        }
+    }
+
+    // The visualisation, drawn into its own layer on whole device pixels;
+    // the MultiEffect below draws it again with a soft bloom.
+    Item {
+        id: glow
+        x: card.snap(card.pad)
+        y: card.snap(card.pad + subtitleText.y + subtitleText.height + 12)
+        width: card.snap(card.width - 2 * card.pad)
+        height: card.snap(card.height - card.pad - card.footer) - y
+        layer.enabled: true
+        visible: false
+
+        Canvas {
+            id: viz
+            anchors.fill: parent
+            renderStrategy: Canvas.Cooperative
+
+            // Everything below is in device pixels: onPaint scales the
+            // context to them, and every length is a whole number of them.
+            readonly property real d: card.dpr
+            function u(v) {
+                return Math.max(1, Math.round(v * d));
             }
 
             // The cell grid shared by the live spectrum and the scans:
@@ -257,20 +334,31 @@ Item {
             // apart, mirrored about the midline. A column of n rows is one
             // cell centred on the midline with n - 1 above and below it,
             // so a silent column is the centre cell alone.
-            readonly property int cellW: 5
-            readonly property int colPitch: cellW + 2
-            readonly property int cell: 6
-            readonly property int pitch: cell + 2
+            readonly property int gap: u(2)
+            readonly property int cellW: Math.max(2, Math.round(5 * d))
+            readonly property int colPitch: cellW + gap
+            readonly property int cell: Math.max(2, Math.round(6 * d))
+            readonly property int pitch: cell + gap
 
             // How many rows a column can have in height h, centre included.
             function rowsFor(h) {
-                return Math.max(1, Math.floor(((h + pitch - cell) / pitch + 1) / 2));
+                return Math.max(1, Math.floor(((h + gap) / pitch + 1) / 2));
+            }
+
+            // The top of the centre row in height h.
+            function centreTop(h) {
+                return Math.floor((h - cell) / 2);
+            }
+
+            // The midline, through the middle of the centre row.
+            function drawMidline(ctx, w, h) {
+                ctx.fillStyle = card.css(card.cDim);
+                ctx.fillRect(0, centreTop(h) + Math.floor((cell - u(1)) / 2), w, u(1));
             }
 
             // Row j of a column at x: the centre cell for j = 0, otherwise
             // the pair j rows above and below it.
-            function fillCellPair(ctx, x, wd, cy, j) {
-                const top = cy - cell / 2;
+            function fillCellPair(ctx, x, wd, top, j) {
                 if (j === 0) {
                     ctx.fillRect(x, top, wd, cell);
                     return;
@@ -286,14 +374,13 @@ Item {
                 const hud = card.hud;
                 const n = hud.bands;
                 const sub = 2;
-                const bandW = sub * colPitch - 2;
-                const bandGap = Math.max(colPitch - cellW, Math.floor((w - n * bandW) / Math.max(1, n - 1)));
+                const bandW = sub * colPitch - gap;
+                const bandGap = Math.max(gap, Math.floor((w - n * bandW) / Math.max(1, n - 1)));
                 const left = Math.floor((w - (n * bandW + (n - 1) * bandGap)) / 2);
-                const cy = h / 2;
+                const top = centreTop(h);
                 const rows = rowsFor(h);
 
-                ctx.fillStyle = css(card.cDim);
-                ctx.fillRect(0, Math.round(cy), w, 1);
+                drawMidline(ctx, w, h);
 
                 for (let i = 0; i < n; i++) {
                     const x = left + i * (bandW + bandGap);
@@ -303,10 +390,10 @@ Item {
                     // cell, so it is not shown.
                     const pkRow = Math.min(rows, Math.round(pk * rows)) - 1;
                     for (let j = 0; j < Math.max(count, pkRow + 1); j++) {
-                        if (j === pkRow && j > 0) ctx.fillStyle = css(card.cHot);
-                        else if (j < count) ctx.fillStyle = css(card.cAccent, 0.85);
+                        if (j === pkRow && j > 0) ctx.fillStyle = card.css(card.cHot);
+                        else if (j < count) ctx.fillStyle = card.css(card.cAccent, 0.85);
                         else continue;
-                        for (let k = 0; k < sub; k++) fillCellPair(ctx, x + k * colPitch, cellW, cy, j);
+                        for (let k = 0; k < sub; k++) fillCellPair(ctx, x + k * colPitch, cellW, top, j);
                     }
                 }
             }
@@ -333,27 +420,28 @@ Item {
 
             // Word blocks for the LLM scan: the transcript's words laid out
             // along the width, wrapped onto more lines when there are too
-            // many to stay legible on one.
+            // many to stay legible on one, centred on the centre row.
             function wordLayout(lens, w, h) {
                 let total = 0;
                 for (let i = 0; i < lens.length; i++) total += lens[i] + 1;
-                const lines = Math.max(1, Math.ceil(total * 2 / w));
-                const unit = Math.min(6, w * lines / Math.max(1, total) * 0.95);
-                const barH = lines === 1 ? 6 : Math.max(2, Math.min(6, h * 0.7 / lines - 2));
-                const pitchY = barH + (lines === 1 ? 0 : 2);
+                const lines = Math.max(1, Math.ceil(total * u(2) / w));
+                const unit = Math.min(u(6), w * lines / Math.max(1, total) * 0.95);
+                const barH = lines === 1 ? cell : Math.max(u(2), Math.min(cell, Math.floor(h * 0.7 / lines) - gap));
+                const pitchY = barH + (lines === 1 ? 0 : gap);
                 const blocks = [];
                 let x = 0;
                 let line = 0;
                 for (let i = 0; i < lens.length; i++) {
-                    const bw = Math.max(1, lens[i] * unit - 1);
+                    const bw = Math.max(1, lens[i] * unit - u(1));
                     if (x > 0 && x + bw > w) {
                         x = 0;
                         line++;
                     }
-                    blocks.push({ x: x, line: line, w: bw });
-                    x += bw + 1 + unit;
+                    const left = Math.round(x);
+                    blocks.push({ x: left, line: line, w: Math.max(1, Math.round(x + bw) - left) });
+                    x += bw + u(1) + unit;
                 }
-                const top = h / 2 - ((line + 1) * pitchY - (pitchY - barH)) / 2;
+                const top = centreTop(h) + Math.round((cell - ((line + 1) * pitchY - (pitchY - barH))) / 2);
                 for (let i = 0; i < blocks.length; i++) blocks[i].y = top + blocks[i].line * pitchY;
                 return { blocks: blocks, barH: barH };
             }
@@ -365,23 +453,23 @@ Item {
             // length of the transcript's words.
             function drawScan(ctx, w, h, t) {
                 const hud = card.hud;
-                const n = Math.max(1, Math.floor((w + 2) / colPitch));
-                const cy = h / 2;
+                const n = Math.max(1, Math.floor((w + gap) / colPitch));
+                const top = centreTop(h);
+                const cy = top + cell / 2;
                 const rows = rowsFor(h);
-                const half = h / 2 - 3;
+                const half = h / 2 - u(3);
                 const env = envelope(n);
                 const grow = Math.min(1, (t - hud.workSince) / 220);
-                const x1 = hud.scanP1 * w;
-                const x2 = card.stage === 2 ? hud.scanP2 * w : -1;
+                const x1 = Math.round(hud.scanP1 * w);
+                const x2 = card.stage === 2 ? Math.round(hud.scanP2 * w) : -1;
 
-                ctx.fillStyle = css(card.cDim);
-                ctx.fillRect(0, Math.round(cy), w, 1);
+                drawMidline(ctx, w, h);
 
                 // Each scan line trails a lane in the theme's selection
                 // colour, behind what it passes over.
                 const lane = function(x) {
-                    ctx.fillStyle = css(card.cLane, 0.85);
-                    ctx.fillRect(x - 10, 0, 12, h);
+                    ctx.fillStyle = card.css(card.cLane, 0.85);
+                    ctx.fillRect(x - u(10), 0, u(12), h);
                 };
                 if (card.stage === 1 && x1 < w) lane(x1);
                 if (x2 >= 0 && x2 < w) lane(x2);
@@ -393,7 +481,7 @@ Item {
                     ctx.rect(x1, 0, w - x1, h);
                     ctx.clip();
                     const px = function(i) { return i * colPitch + cellW / 2; };
-                    const amp = function(i) { return Math.max(1, env[i] * half * grow); };
+                    const amp = function(i) { return Math.max(d, env[i] * half * grow); };
                     ctx.beginPath();
                     ctx.moveTo(0, cy);
                     for (let i = 0; i < n; i++) {
@@ -407,13 +495,13 @@ Item {
                     }
                     ctx.closePath();
                     const grad = ctx.createLinearGradient(0, cy - half, 0, cy + half);
-                    grad.addColorStop(0, css(card.cMid, 0.25));
-                    grad.addColorStop(0.5, css(card.cAccent, 0.45));
-                    grad.addColorStop(1, css(card.cMid, 0.25));
+                    grad.addColorStop(0, card.css(card.cMid, 0.25));
+                    grad.addColorStop(0.5, card.css(card.cAccent, 0.45));
+                    grad.addColorStop(1, card.css(card.cMid, 0.25));
                     ctx.fillStyle = grad;
                     ctx.fill();
-                    ctx.lineWidth = 1.2;
-                    ctx.strokeStyle = css(card.cAccent, 0.7);
+                    ctx.lineWidth = 1.2 * d;
+                    ctx.strokeStyle = card.css(card.cAccent, 0.7);
                     ctx.stroke();
                     ctx.restore();
                 }
@@ -426,9 +514,9 @@ Item {
                     const count = Math.max(1, Math.round(env[i] * rows));
                     const behind2 = x + cellW <= x2;
                     const near = (x1 - x) / colPitch < 3 && card.stage === 1;
-                    ctx.fillStyle = behind2 ? css(card.cAccent, card.ghostAlpha)
-                        : near ? css(card.cHot) : css(card.cAccent, 0.85);
-                    for (let j = 0; j < count; j++) fillCellPair(ctx, x, cellW, cy, j);
+                    ctx.fillStyle = behind2 ? card.css(card.cAccent, card.ghostAlpha)
+                        : near ? card.css(card.cHot) : card.css(card.cAccent, 0.85);
+                    for (let j = 0; j < count; j++) fillCellPair(ctx, x, cellW, top, j);
                 }
 
                 // Word blocks, left of the LLM line.
@@ -439,15 +527,15 @@ Item {
                         const b = lay.blocks[i];
                         if (b.x >= x2) continue;
                         const bw = Math.min(b.w, x2 - b.x);
-                        ctx.fillStyle = x2 - b.x < 24 ? css(card.cText) : css(card.cHot);
+                        ctx.fillStyle = x2 - b.x < u(24) ? card.css(card.cText) : card.css(card.cHot);
                         ctx.fillRect(b.x, b.y, bw, lay.barH);
                     }
                 }
 
                 // Scan lines: a bright edge at the front of each lane.
                 const line = function(x, colour) {
-                    ctx.fillStyle = css(colour);
-                    ctx.fillRect(x - 1, 0, 2, h);
+                    ctx.fillStyle = card.css(colour);
+                    ctx.fillRect(x - u(1), 0, u(2), h);
                 };
                 if (card.stage === 1 && x1 < w) line(x1, card.cHot);
                 if (x2 >= 0 && x2 < w) line(x2, card.cText);
@@ -460,9 +548,9 @@ Item {
             // fill. It is paced to end with voxtype's real typing.
             function drawTyping(ctx, w, h, t) {
                 const hud = card.hud;
-                const cell = 8;
-                const pitch = cell + 3;
-                const lineGap = 8;
+                const cell = u(8);
+                const pitch = cell + u(3);
+                const lineGap = u(8);
                 const linePitch = cell + lineGap;
                 const cols = Math.floor(w / pitch);
                 const visibleLines = Math.max(1, Math.floor((h + lineGap) / linePitch));
@@ -500,15 +588,15 @@ Item {
                     const p = layout[k];
                     if (p.line < firstLine) continue;
                     const age = shown - k;
-                    ctx.fillStyle = age < 6 ? css(card.cHot) : css(card.cAccent, 0.55 + 0.45 * Math.max(0, 1 - age / 60));
+                    ctx.fillStyle = age < 6 ? card.css(card.cHot) : card.css(card.cAccent, 0.55 + 0.45 * Math.max(0, 1 - age / 60));
                     ctx.fillRect(p.col * pitch, top + (p.line - firstLine) * linePitch, cell, cell);
                 }
 
                 // Block cursor: solid while typing, blinking once done.
                 const done = shown >= layout.length;
                 if (!done || Math.floor(t / 450) % 2 === 0) {
-                    ctx.fillStyle = css(card.cHot);
-                    ctx.fillRect(cur.col * pitch, top + (cur.line - firstLine) * linePitch - 2, cell, cell + 4);
+                    ctx.fillStyle = card.css(card.cHot);
+                    ctx.fillRect(cur.col * pitch, top + (cur.line - firstLine) * linePitch - u(2), cell, cell + u(4));
                 }
             }
 
@@ -516,70 +604,26 @@ Item {
                 const ctx = getContext("2d");
                 ctx.reset();
                 if (!card.hud) return;
+                ctx.scale(1 / d, 1 / d);
+                const w = Math.round(width * d);
+                const h = Math.round(height * d);
                 const t = card.hud.now;
-                if (card.stage === 0) drawSpectrum(ctx, width, height);
-                else if (card.stage <= 2) drawScan(ctx, width, height, t);
-                else drawTyping(ctx, width, height, t);
-            }
-        }
-
-        // Progress, hidden while recording: the current scan's position
-        // while transcribing and refining, full when done.
-        Canvas {
-            id: progress
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 3
-            renderStrategy: Canvas.Cooperative
-
-            onPaint: {
-                const ctx = getContext("2d");
-                ctx.reset();
-                if (!card.hud) return;
-                const hud = card.hud;
-                const w = width;
-                const h = height;
-                const c = function(col, a) {
-                    return "rgba(" + Math.round(col.r * 255) + "," + Math.round(col.g * 255) + ","
-                        + Math.round(col.b * 255) + "," + a + ")";
-                };
-                // No bar while recording, so it doesn't read as a
-                // countdown, until the last seconds before voxtype's cap or
-                // the silence auto-stop, when it drains to zero.
-                if (card.stage === 0) {
-                    const left = hud.stopWarning ? hud.remaining / 10
-                        : hud.silenceWarning ? (hud.silenceStopSecs - hud.silentFor) / 5
-                        : -1;
-                    if (left >= 0) {
-                        ctx.fillStyle = c(card.cDim, 1);
-                        ctx.fillRect(0, 0, w, h);
-                        ctx.fillStyle = c(card.cWarn, 1);
-                        ctx.fillRect(0, 0, Math.max(0, Math.min(1, left)) * w, h);
-                    }
-                    return;
-                }
-                ctx.fillStyle = c(card.cDim, 1);
-                ctx.fillRect(0, 0, w, h);
-
-                const to = Math.min(w, card.stage === 1 ? hud.scanP1 * w
-                    : card.stage === 2 ? hud.scanP2 * w
-                    : w);
-                if (to > 0) {
-                    const g = ctx.createLinearGradient(0, 0, to, 0);
-                    g.addColorStop(0, c(card.cAccent, 1));
-                    g.addColorStop(1, c(card.cHot, 1));
-                    ctx.fillStyle = g;
-                    ctx.fillRect(0, 0, to, h);
-                }
+                if (card.stage === 0) drawSpectrum(ctx, w, h);
+                else if (card.stage <= 2) drawScan(ctx, w, h, t);
+                else drawTyping(ctx, w, h, t);
             }
         }
     }
 
     MultiEffect {
-        source: screen
-        anchors.fill: screen
-        autoPaddingEnabled: true
+        source: glow
+        x: glow.x
+        y: glow.y
+        width: glow.width
+        height: glow.height
+        // Padding of whole device pixels, so the layer is not resampled.
+        autoPaddingEnabled: false
+        paddingRect: Qt.rect(card.snap(20), card.snap(20), card.snap(20), card.snap(20))
         shadowEnabled: true
         shadowColor: card.cAccent
         shadowBlur: 0.45
@@ -591,17 +635,23 @@ Item {
     }
 
     // Faint scanlines, on dark themes only: on a light card they read as
-    // grey stripes.
+    // grey stripes. One device pixel in every three.
     Canvas {
         anchors.fill: parent
-        anchors.margins: 1
+        anchors.margins: card.snap(1)
         visible: !card.light
         opacity: 0.12
         onPaint: {
             const ctx = getContext("2d");
             ctx.reset();
+            const d = card.dpr;
+            ctx.scale(1 / d, 1 / d);
+            const w = Math.round(width * d);
+            const h = Math.round(height * d);
+            const step = Math.max(2, Math.round(3 * d));
+            const line = Math.max(1, Math.round(d));
             ctx.fillStyle = "#000000";
-            for (let y = 0; y < height; y += 3) ctx.fillRect(0, y, width, 1);
+            for (let y = 0; y < h; y += step) ctx.fillRect(0, y, w, line);
         }
     }
 
@@ -609,26 +659,31 @@ Item {
     Canvas {
         id: brackets
         anchors.fill: parent
-        anchors.margins: -5
+        anchors.margins: -card.snap(5)
         onPaint: {
             const ctx = getContext("2d");
             ctx.reset();
             if (!card.hud) return;
             const hud = card.hud;
-            const L = 18;
-            const w = width;
-            const h = height;
+            const d = card.dpr;
+            ctx.scale(1 / d, 1 / d);
+            const w = Math.round(width * d);
+            const h = Math.round(height * d);
+            const L = Math.round(18 * d);
+            // A stroke of whole device pixels, centred so its edges land
+            // on pixel boundaries.
+            const lw = Math.max(1, Math.round(2 * d));
+            const o = lw / 2;
             const c = hud.anyWarning ? card.cWarn : card.cAccent;
             const a = hud.anyWarning ? (Math.floor(hud.now / 400) % 2 ? 1.0 : 0.35)
                 : card.stage === 0 ? 0.5 + 0.5 * Math.min(1, hud.energy * 3) : 0.8;
-            ctx.strokeStyle = "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + ","
-                + Math.round(c.b * 255) + "," + a + ")";
-            ctx.lineWidth = 2;
+            ctx.strokeStyle = card.css(c, a);
+            ctx.lineWidth = lw;
             ctx.beginPath();
-            ctx.moveTo(1, L); ctx.lineTo(1, 1); ctx.lineTo(L, 1);
-            ctx.moveTo(w - L, 1); ctx.lineTo(w - 1, 1); ctx.lineTo(w - 1, L);
-            ctx.moveTo(w - 1, h - L); ctx.lineTo(w - 1, h - 1); ctx.lineTo(w - L, h - 1);
-            ctx.moveTo(L, h - 1); ctx.lineTo(1, h - 1); ctx.lineTo(1, h - L);
+            ctx.moveTo(o, L); ctx.lineTo(o, o); ctx.lineTo(L, o);
+            ctx.moveTo(w - L, o); ctx.lineTo(w - o, o); ctx.lineTo(w - o, L);
+            ctx.moveTo(w - o, h - L); ctx.lineTo(w - o, h - o); ctx.lineTo(w - L, h - o);
+            ctx.moveTo(L, h - o); ctx.lineTo(o, h - o); ctx.lineTo(o, h - L);
             ctx.stroke();
         }
     }

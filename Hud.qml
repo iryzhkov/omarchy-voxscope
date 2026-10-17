@@ -785,8 +785,8 @@ Item {
         id: window
         visible: root.windowShown
         screen: root.targetScreen
-        implicitWidth: card.implicitWidth + 80
-        implicitHeight: card.implicitHeight + 80
+        implicitWidth: Math.ceil(card.implicitWidth) + 80
+        implicitHeight: Math.ceil(card.implicitHeight) + 80
         color: "transparent"
         WlrLayershell.namespace: "voxscope"
         WlrLayershell.layer: WlrLayer.Overlay
@@ -794,10 +794,12 @@ Item {
         exclusionMode: ExclusionMode.Ignore
         mask: Region {}
 
+        // Centred on whole device pixels, so the card's own snapping holds.
         Card {
             id: card
             hud: root
-            anchors.centerIn: parent
+            x: card.snap((parent.width - width) / 2)
+            y: card.snap((parent.height - height) / 2)
             width: implicitWidth
             height: implicitHeight
         }
