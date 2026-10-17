@@ -23,11 +23,15 @@
 // Linger. When Voxtype goes idle after transcribing, the HUD stays up while
 // any scan still running fast-forwards and the typing animation runs out,
 // then hides; never longer than Timing.LINGER_MAX_MS after going idle.
-// Recording again meanwhile starts over at once, in the same window.
+// Recording again meanwhile starts over in the same window, which keeps the
+// linger's last frame while the new dictation settles (see `holding`).
 //
 // Suppression. A dictation started with `voxtype record start --no-osd` is
 // never shown, not even during the linger, although Voxtype removes its
-// marker when it goes idle; see `suppressed`.
+// marker when it goes idle; see `suppressed`. Voxtype creates the marker
+// just after writing the recording state, so every dictation waits a
+// moment (`settling`) before it is drawn or the microphone is opened, and
+// the marker as it is then decides.
 //
 // Stale state. If Voxtype stays recording or transcribing for longer than
 // it could, it has died and left its state file behind; the HUD hides and
@@ -117,13 +121,22 @@ Item {
     property bool inDictation: false
     // Whether this dictation asked for no OSD. Voxtype removes the marker
     // when it goes idle, and the marker and the state file can change in
-    // either order, so this is set when the dictation starts and whenever
-    // the marker is seen during it, and only reset when the next starts.
+    // either order, so this is decided from the marker when the dictation
+    // has settled, set again whenever the marker is seen after that, and
+    // only reset when the next dictation settles.
     property bool suppressed: false
-    // True for a moment when a dictation starts with the HUD hidden, so a
-    // marker created just after the state is seen before the window maps.
+    // True for settleMs after a dictation starts, so a marker created just
+    // after the state is seen, and one left over from the previous
+    // dictation is seen gone, before anything is drawn or the audio bridge
+    // and cava start.
     property bool settling: false
     readonly property int settleMs: 80
+    // Set while settling if the window was up for the previous dictation
+    // (recording again during its linger): the window stays mapped and
+    // keeps that dictation's last frame (see heldFrame), so an ordinary
+    // re-record neither unmaps it nor draws REC before the marker could
+    // have appeared. A marker that appears meanwhile clears it at once.
+    property bool holding: false
     // Set when Voxtype has stayed recording or transcribing for longer than
     // it could; cleared by the next state change.
     property bool stalled: false
@@ -232,13 +245,21 @@ Item {
         return screens.length > 0 ? screens[0] : null;
     }
 
-    // The window follows `shown`, but only after its screen is set, so it
-    // never maps on the wrong output first.
-    onShownChanged: {
-        if (shown) targetScreen = focusedScreen();
-        else endLinger();
-        windowShown = shown;
+    // The window follows `shown`, or `holding`, but only after its screen
+    // is set, so it never maps on the wrong output first.
+    function updateWindow() {
+        const want = shown || holding;
+        if (want === windowShown) return;
+        if (want) targetScreen = focusedScreen();
+        windowShown = want;
     }
+
+    onShownChanged: {
+        if (!shown) endLinger();
+        updateWindow();
+    }
+
+    onHoldingChanged: updateWindow()
 
     onLiveChanged: {
         if (live) startCava();
@@ -246,13 +267,27 @@ Item {
     }
 
     onMarkerPresentChanged: {
-        if (markerPresent && inDictation) suppressed = true;
+        // While settling the marker is only looked at when that ends.
+        if (settling) {
+            if (markerPresent) holding = false;
+        } else if (markerPresent && inDictation) {
+            suppressed = true;
+        }
     }
 
     Timer {
         id: settleTimer
         interval: root.settleMs
-        onTriggered: root.settling = false
+        onTriggered: root.settle()
+    }
+
+    // Ends the settling: the marker as it is now decides whether this
+    // dictation is suppressed. Assigned in this order so a held window that
+    // goes on to show the new dictation never unmaps in between.
+    function settle() {
+        suppressed = markerPresent;
+        settling = false;
+        holding = false;
     }
 
     function endLinger() {
@@ -277,12 +312,13 @@ Item {
         if (wasRecording && !isRecording) recSecs = (t - stateSince) / 1000;
 
         // What `shown` is made of is assigned so that it can only go true
-        // once everything is in place: settling first, stalled last.
-        if (starts && !wasShown) {
+        // once everything is in place: settling first, stalled last. The
+        // window is held before `shown` goes false, so it stays mapped.
+        if (starts) {
+            holding = holding || wasShown;
             settling = true;
             settleTimer.restart();
         }
-        if (starts) suppressed = markerPresent;
         if (prevState === "transcribing" && !isWorking && !isRecording && wasShown && !suppressed) {
             idleAt = t;
             typingDoneAt = null;
@@ -750,8 +786,22 @@ Item {
             width: implicitWidth
             height: implicitHeight
         }
+
+        // The card is drawn through this texture, which stops updating while
+        // the window is held, so the window keeps the previous dictation's
+        // last frame although the card's bindings already follow the new
+        // one.
+        ShaderEffectSource {
+            id: heldFrame
+            anchors.fill: card
+            sourceItem: card
+            hideSource: true
+            live: !root.holding
+        }
     }
 
-    // The card, for a test harness to capture frames from.
+    // The card, and what the window shows of it, for a test harness to
+    // capture frames from.
     readonly property Item cardItem: card
+    readonly property Item windowItem: heldFrame
 }
