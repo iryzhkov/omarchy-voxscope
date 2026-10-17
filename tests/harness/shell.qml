@@ -20,6 +20,14 @@ ShellRoot {
     readonly property string out: Quickshell.env("HARNESS_OUT")
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR")
     readonly property string bridge: Quickshell.env("HARNESS_BRIDGE")
+    readonly property bool fakeCava: scenario === "quiet" || scenario === "loud"
+    // The spectrum while speech is being fed in by fake-cava.py: the
+    // loudest band level seen, and the largest share of bands at the top
+    // in any one frame.
+    property real speechMaxLevel: 0
+    property real speechMaxPinned: 0
+    property int speechFrames: 0
+    property real hissMaxLevel: 0
     // Stands in for omarchy-shell, which the HUD reads its settings from:
     // the plugin's entry in shell.json, here made from HARNESS_SETTINGS.
     readonly property var fakeShell: {
@@ -270,6 +278,33 @@ ShellRoot {
             [6200, "state", "idle"],
             [7000, "quit", ""]
         ],
+        // Soft speech from fake-cava.py, peaking at about 0.03 of cava's
+        // range, after an earlier session saved a reference ten times
+        // that: room hiss must rest at the centre cell, and the speech
+        // must fill several cells within its first second.
+        quiet: [
+            [0, "state", "recording"],
+            [500, "grab", "hiss"],
+            [500, "check", "hiss"],
+            [1500, "grab", "quiet-early"],
+            [1600, "check", "speech-early"],
+            [2600, "grab", "quiet"],
+            [3400, "grab", "quiet-late"],
+            [3500, "check", "quiet"],
+            [3600, "state", "idle"],
+            [4500, "quit", ""]
+        ],
+        // Loud speech, its loudest bands touching the top of cava's range:
+        // it must fill the height without every column pinned there.
+        loud: [
+            [0, "state", "recording"],
+            [1500, "grab", "loud-early"],
+            [2600, "grab", "loud"],
+            [3400, "grab", "loud-late"],
+            [3500, "check", "loud"],
+            [3600, "state", "idle"],
+            [4500, "quit", ""]
+        ],
         cava: [
             [0, "state", "recording"],
             [1500, "grab", "cava"],
@@ -284,7 +319,7 @@ ShellRoot {
         id: hud
         shell: harness.fakeShell
         bridgeCommand: ["/usr/bin/python3", "-I", harness.bridge,
-                        harness.scenario === "silence" ? "silent"
+                        harness.scenario === "silence" || harness.fakeCava ? "silent"
                         : harness.scenario === "nobridge" ? "stall" : "speech"]
         onShownChanged: if (shown) harness.sawShown = true
         // Whether the hold is clean is looked at once the handler that began
@@ -322,7 +357,9 @@ ShellRoot {
                 + (Date.now() - harness.t0) + " ms");
         }
         stopCommand: ["/usr/bin/touch", harness.runtime + "/stopped"]
-        sourceCommand: harness.scenario === "cava" ? ["/usr/bin/pactl", "get-default-source"] : ["/usr/bin/false"]
+        sourceCommand: harness.scenario === "cava" ? ["/usr/bin/pactl", "get-default-source"]
+            : harness.fakeCava ? ["/usr/bin/echo", "harness.fake.source"] : ["/usr/bin/false"]
+        cavaExecutable: harness.fakeCava ? Quickshell.env("HARNESS_FAKE_CAVA") : "/usr/bin/cava"
     }
 
     FileView {
@@ -486,6 +523,25 @@ ShellRoot {
             const ok = hud.daemonState === "recording";
             console.log((ok ? "CHECK" : "FAIL") + " state file followed after its directory appeared: "
                 + hud.daemonState);
+        } else if (what === "hiss") {
+            const ok = hud.lastCavaMs > 0 && hissMaxLevel < 0.06;
+            console.log((ok ? "CHECK" : "FAIL") + " room hiss rests at the centre cell: loudest band "
+                + hissMaxLevel.toFixed(3) + ", cava frames " + (hud.lastCavaMs > 0));
+        } else if (what === "speech-early") {
+            const ok = speechMaxLevel >= 0.35;
+            console.log((ok ? "CHECK" : "FAIL") + " quiet speech moves in its first second: loudest band "
+                + speechMaxLevel.toFixed(3) + " over " + speechFrames + " frames, reference now "
+                + hud.bandRef.slice(0, 4).map(function(v) { return v.toFixed(3); }).join(" "));
+        } else if (what === "quiet") {
+            const ok = speechMaxLevel >= 0.5 && speechMaxPinned < 0.5;
+            console.log((ok ? "CHECK" : "FAIL") + " quiet speech fills the spectrum: loudest band "
+                + speechMaxLevel.toFixed(3) + ", most bands pinned at once "
+                + (speechMaxPinned * 100).toFixed(0) + " %");
+        } else if (what === "loud") {
+            const ok = speechMaxLevel >= 0.6 && speechMaxPinned < 0.5;
+            console.log((ok ? "CHECK" : "FAIL") + " loud speech is not pinned at the top: loudest band "
+                + speechMaxLevel.toFixed(3) + ", most bands pinned at once "
+                + (speechMaxPinned * 100).toFixed(0) + " %");
         } else if (what === "cava") {
             const ok = hud.lastCavaMs > 0 && Date.now() - hud.lastCavaMs < 500;
             console.log((ok ? "CHECK" : "FAIL") + " cava spectrum: " + hud.target.length
@@ -506,6 +562,22 @@ ShellRoot {
                 const step = script[harness.next];
                 harness.next++;
                 harness.run(step[1], step[2]);
+            }
+            if (harness.fakeCava && hud.recording && hud.level.length > 0) {
+                let top = 0;
+                let pinned = 0;
+                for (let i = 0; i < hud.level.length; i++) {
+                    top = Math.max(top, hud.level[i]);
+                    if (hud.level[i] >= 0.97) pinned++;
+                }
+                // fake-cava.py starts speaking 0.6 s in.
+                if (e < 550) {
+                    if (hud.lastCavaMs > 0) harness.hissMaxLevel = Math.max(harness.hissMaxLevel, top);
+                } else if (e > 650) {
+                    harness.speechFrames++;
+                    harness.speechMaxLevel = Math.max(harness.speechMaxLevel, top);
+                    harness.speechMaxPinned = Math.max(harness.speechMaxPinned, pinned / hud.level.length);
+                }
             }
             if (hud.lingering && harness.lingerStartedAt === null) harness.lingerStartedAt = hud.idleAt;
             if (hud.shown && !hud.lingering) harness.lingerStartedAt = null;

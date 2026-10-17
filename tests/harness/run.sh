@@ -10,10 +10,12 @@
 # touched; Voxtype itself is never contacted.
 #
 # Scenarios (see shell.qml): pipeline, fastidle, relinger, noscript,
-# silence, cap, cava, suppressed, suppressedrelinger, oldmarker, latemarker,
-# nobridge, stale, latedir.
+# silence, cap, cava, quiet, loud, suppressed, suppressedrelinger,
+# oldmarker, latemarker, nobridge, stale, latedir.
 # "cava" points PipeWire and Pulse at the real session so cava can listen
-# to the default microphone. "stale" takes about 35 s.
+# to the default microphone. "quiet" and "loud" feed the spectrum from
+# fake-cava.py instead; "quiet" starts from a saved calibration left high
+# by an earlier, louder session. "stale" takes about 35 s.
 #
 # Output goes to $VOXSCOPE_TEST_DIR/<scenario> (default
 # ~/.cache/voxscope-test/<scenario>): frames/*.png and log.txt.
@@ -37,9 +39,9 @@ set -euo pipefail
 
 scenario=${1:-}
 case $scenario in
-  pipeline | fastidle | relinger | noscript | silence | cap | cava | suppressed | suppressedrelinger | oldmarker | latemarker | nobridge | stale | latedir) ;;
+  pipeline | fastidle | relinger | noscript | silence | cap | cava | quiet | loud | suppressed | suppressedrelinger | oldmarker | latemarker | nobridge | stale | latedir) ;;
   *)
-    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava|suppressed|suppressedrelinger|oldmarker|latemarker|nobridge|stale|latedir" >&2
+    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava|quiet|loud|suppressed|suppressedrelinger|oldmarker|latemarker|nobridge|stale|latedir" >&2
     exit 2
     ;;
 esac
@@ -87,6 +89,11 @@ fi
 if [[ $scenario == stale ]]; then
   printf '[audio]\nmax_duration_secs = 1\n' >"$run/config/voxtype/config.toml"
 fi
+if [[ $scenario == quiet ]]; then
+  mkdir -p -- "$run/state/voxscope"
+  python3 -I -c 'import json, sys; print(json.dumps({"version": 1, "ref": [0.3] * 32, "noise": [0.002] * 32}))' \
+    >"$run/state/voxscope/calibration.json"
+fi
 
 # Hyprland's IPC socket cannot be reached from here: its path under the
 # scratch runtime is longer than a Unix socket path may be. Without it the
@@ -111,6 +118,7 @@ env "${audio_env[@]}" XDG_RUNTIME_DIR="$run/runtime" WAYLAND_DISPLAY="$wayland" 
   XDG_STATE_HOME="$run/state" XDG_CONFIG_HOME="$run/config" \
   HARNESS_SCENARIO="$scenario" HARNESS_OUT="$run/frames" \
   HARNESS_BRIDGE="$here/fake-bridge.py" HARNESS_SETTINGS="${VOXSCOPE_SETTINGS:-}" \
+  HARNESS_CAVA="$scenario" HARNESS_FAKE_CAVA="$here/fake-cava.py" \
   timeout 40 quickshell -p "$run/app/shell.qml" >"$run/log.txt" 2>&1 || status=$?
 
 echo "$scenario: exit $status, output in $run"
