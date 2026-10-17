@@ -1,0 +1,595 @@
+// The Voxscope card: everything the HUD draws, read off `hud` (Hud.qml).
+//
+// Each stage of the dictation pipeline has its own visualisation:
+//   REC  a mirrored live spectrum of the mic, with held peaks; meanwhile the
+//        loudness is recorded as a timeline, one column per 100 ms
+//   STT  the whole recording's timeline, drawn as a soft analog envelope,
+//        with a scan line sweeping across it; behind the line the columns
+//        are rebuilt from square cells
+//   LLM  a second scan line over those cells, turning them into blocks the
+//        length of the transcript's words
+//   OUT  the words typed out as runs of cells behind a block cursor; the
+//        subtitle gives the word count and whether the LLM cleaned the text
+// A stepper across the top and a progress bar along the bottom track the
+// same stages.
+//
+// Colour comes from the active Omarchy theme, which Hud.qml re-reads each
+// time the HUD appears.
+
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Effects
+
+Item {
+    id: card
+
+    // The Hud.qml instance whose state this card draws.
+    property var hud: null
+
+    implicitWidth: 580
+    implicitHeight: 268
+
+    function mix(a, b, t) {
+        return Qt.rgba(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
+                       a.b + (b.b - a.b) * t, 1);
+    }
+
+    readonly property color cBg: hud.themeBackground
+    readonly property color cDim: mix(hud.themeBackground, hud.themeAccent, 0.18)
+    readonly property color cMid: mix(hud.themeBackground, hud.themeAccent, 0.55)
+    readonly property color cAccent: hud.themeAccent
+    readonly property color cHot: mix(hud.themeAccent, hud.themeForeground, 0.5)
+    readonly property color cText: hud.themeForeground
+    readonly property color cMuted: hud.themeMuted
+    readonly property color cWarn: mix(hud.themeAccent, Qt.color("#ff3b30"), 0.7)
+    readonly property string fontFamily: "JetBrainsMono Nerd Font"
+
+    readonly property int stage: hud.stage
+
+    function repaint() {
+        viz.requestPaint();
+        progress.requestPaint();
+        brackets.requestPaint();
+    }
+
+    function fmtClock(secs) {
+        const tenths = Math.floor(secs * 10);
+        const s = Math.floor(tenths / 10);
+        const m = Math.floor(s / 60);
+        return (m < 10 ? "0" : "") + m + ":" + (s % 60 < 10 ? "0" : "") + (s % 60) + "." + (tenths % 10);
+    }
+
+    function modelName() {
+        return String(hud.pp.model || "llm").replace(/:latest$/, "");
+    }
+
+    function title() {
+        return ["LISTENING", "TRANSCRIBING", "REFINING", "TYPING"][stage];
+    }
+
+    function subtitle() {
+        if (hud.stopWarning) return "AUTO-STOP IN " + Math.max(0, Math.ceil(hud.remaining)) + "S";
+        if (hud.silenceWarning) return "NO VOICE  ·  STOPPING IN " + Math.max(0, Math.ceil(hud.silenceStopSecs - hud.silentFor)) + "S";
+        if (stage === 0) return "MICROPHONE";
+        if (stage === 1) return "SPEECH TO TEXT  ·  WHISPER";
+        if (stage === 2) return "POST-PROCESSING  ·  " + modelName().toUpperCase();
+        if (!hud.ppFresh) return "OUTPUT";
+        const pp = hud.pp;
+        const words = typeof pp.words === "number" ? "  ·  " + pp.words + " WORDS" : "";
+        if (pp.cleaned) return "CLEANED BY " + modelName().toUpperCase() + words;
+        if (pp.reason === "disabled") return "LLM CLEANUP OFF" + words;
+        if (pp.reason === "loading") return "MODEL WARMING UP  ·  RAW" + words;
+        return "RAW TRANSCRIPT" + words;
+    }
+
+    component Label: Text {
+        textFormat: Text.PlainText
+        font.family: card.fontFamily
+        font.pixelSize: 12
+        font.letterSpacing: 2
+        color: card.cMuted
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        radius: 6
+        color: card.cBg
+        border.width: 1
+        border.color: card.cDim
+    }
+
+    // Everything that glows is drawn into `screen`; the MultiEffect below
+    // draws it again with a soft bloom.
+    Item {
+        id: screen
+        anchors.fill: parent
+        anchors.margins: 24
+        layer.enabled: true
+        visible: false
+
+        // Stepper: REC - STT - LLM - OUT.
+        Row {
+            id: stepper
+            anchors.left: parent.left
+            anchors.top: parent.top
+            spacing: 0
+            Repeater {
+                model: ["REC", "STT", "LLM", "OUT"]
+                Row {
+                    id: step
+                    required property int index
+                    required property string modelData
+                    spacing: 8
+                    Rectangle {
+                        visible: step.index > 0
+                        width: 22
+                        height: 1
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: step.index <= card.stage ? card.cAccent : card.cDim
+                    }
+                    Rectangle {
+                        width: 9
+                        height: 9
+                        radius: 4.5
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: step.index < card.stage ? card.cAccent
+                            : step.index === card.stage ? card.cHot
+                            : "transparent"
+                        border.width: 1
+                        border.color: step.index <= card.stage ? card.cAccent : card.cDim
+                        opacity: step.index === card.stage && card.stage < 3
+                            ? 0.55 + 0.45 * Math.abs(Math.sin(card.hud.now / 320)) : 1
+                    }
+                    Label {
+                        text: step.modelData
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.bold: step.index === card.stage
+                        color: step.index === card.stage ? card.cText
+                            : step.index < card.stage ? card.cAccent
+                            : card.cMuted
+                    }
+                    Item { width: 4; height: 1 }
+                }
+            }
+        }
+
+        Label {
+            anchors.right: parent.right
+            anchors.verticalCenter: stepper.verticalCenter
+            text: card.fmtClock(card.stage === 0 ? card.hud.elapsed : card.hud.stageElapsed)
+            font.pixelSize: 13
+            color: card.hud.stopWarning ? card.cWarn : card.cText
+        }
+
+        Text {
+            id: titleText
+            anchors.left: parent.left
+            anchors.top: stepper.bottom
+            anchors.topMargin: 14
+            textFormat: Text.PlainText
+            text: card.title()
+            font.family: card.fontFamily
+            font.pixelSize: 26
+            font.bold: true
+            font.letterSpacing: 5
+            color: card.cHot
+        }
+
+        Label {
+            id: subtitleText
+            anchors.left: parent.left
+            anchors.top: titleText.bottom
+            anchors.topMargin: 2
+            text: card.subtitle()
+            color: card.hud.anyWarning ? card.cWarn : card.cMuted
+            font.bold: card.hud.anyWarning
+        }
+
+        // Indicator lights while recording: input alive, voice heard (held
+        // so it doesn't flicker word to word), and clipping.
+        Row {
+            visible: card.stage === 0
+            anchors.right: parent.right
+            anchors.verticalCenter: subtitleText.verticalCenter
+            spacing: 14
+            Repeater {
+                model: [
+                    { name: "MIC", key: "mic" },
+                    { name: "VOICE", key: "voice" },
+                    { name: "CLIP", key: "clip" }
+                ]
+                Row {
+                    required property var modelData
+                    readonly property bool lit: modelData.key === "mic" ? card.hud.micLit
+                        : modelData.key === "voice" ? card.hud.voiceLit
+                        : card.hud.clipLit
+                    readonly property color litColor: modelData.key === "clip" ? card.cWarn : card.cHot
+                    spacing: 6
+                    Rectangle {
+                        width: 7
+                        height: 7
+                        radius: 1
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: parent.lit ? parent.litColor : "transparent"
+                        border.width: 1
+                        border.color: parent.lit ? parent.litColor : card.cDim
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                    }
+                    Label {
+                        text: parent.modelData.name
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.pixelSize: 11
+                        color: parent.lit ? card.cText : card.cMuted
+                    }
+                }
+            }
+        }
+
+        Canvas {
+            id: viz
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: subtitleText.bottom
+            anchors.topMargin: 12
+            anchors.bottom: progress.top
+            anchors.bottomMargin: 12
+            renderStrategy: Canvas.Cooperative
+
+            function css(c, a) {
+                return "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + ","
+                    + Math.round(c.b * 255) + "," + (a === undefined ? 1 : a) + ")";
+            }
+
+            function drawSpectrum(ctx, w, h) {
+                const hud = card.hud;
+                const n = hud.bands;
+                const gap = 4;
+                const bw = (w - gap * (n - 1)) / n;
+                const cy = h / 2;
+                const half = h / 2 - 3;
+
+                ctx.fillStyle = css(card.cDim);
+                ctx.fillRect(0, Math.round(cy), w, 1);
+
+                const grad = ctx.createLinearGradient(0, cy - half, 0, cy + half);
+                grad.addColorStop(0, css(card.cMid));
+                grad.addColorStop(0.35, css(card.cAccent));
+                grad.addColorStop(0.5, css(card.cHot));
+                grad.addColorStop(0.65, css(card.cAccent));
+                grad.addColorStop(1, css(card.cMid));
+
+                for (let i = 0; i < n; i++) {
+                    const x = i * (bw + gap);
+                    const amp = Math.max(1, (hud.level[i] || 0) * half);
+                    ctx.fillStyle = grad;
+                    ctx.fillRect(x, cy - amp, bw, amp * 2);
+                    const pk = hud.peak[i] || 0;
+                    if (pk > 0.03) {
+                        ctx.fillStyle = css(card.cHot);
+                        ctx.fillRect(x, cy - pk * half - 3, bw, 2);
+                        ctx.fillRect(x, cy + pk * half + 1, bw, 2);
+                    }
+                }
+            }
+
+            // The recording's timeline resampled to `n` columns, each the
+            // loudest 100 ms in its slice, normalised to the loudest column
+            // so quiet recordings still fill the height.
+            function envelope(n) {
+                const tape = card.hud.tape;
+                const out = new Array(n).fill(0);
+                if (tape.length === 0) return out;
+                let top = 0.15;
+                for (let i = 0; i < n; i++) {
+                    const a = Math.floor(i * tape.length / n);
+                    const b = Math.max(a + 1, Math.floor((i + 1) * tape.length / n));
+                    let v = 0;
+                    for (let k = a; k < b && k < tape.length; k++) v = Math.max(v, tape[k]);
+                    out[i] = v;
+                    top = Math.max(top, v);
+                }
+                for (let i = 0; i < n; i++) out[i] = out[i] / top;
+                return out;
+            }
+
+            // Word blocks for the LLM scan: the transcript's words laid out
+            // along the width, wrapped onto more lines when there are too
+            // many to stay legible on one.
+            function wordLayout(lens, w, h) {
+                let total = 0;
+                for (let i = 0; i < lens.length; i++) total += lens[i] + 1;
+                const lines = Math.max(1, Math.ceil(total * 2 / w));
+                const unit = Math.min(6, w * lines / Math.max(1, total) * 0.95);
+                const barH = lines === 1 ? 6 : Math.max(2, Math.min(6, h * 0.7 / lines - 2));
+                const pitchY = barH + (lines === 1 ? 0 : 2);
+                const blocks = [];
+                let x = 0;
+                let line = 0;
+                for (let i = 0; i < lens.length; i++) {
+                    const bw = Math.max(1, lens[i] * unit - 1);
+                    if (x > 0 && x + bw > w) {
+                        x = 0;
+                        line++;
+                    }
+                    blocks.push({ x: x, line: line, w: bw });
+                    x += bw + 1 + unit;
+                }
+                const top = h / 2 - ((line + 1) * pitchY - (pitchY - barH)) / 2;
+                for (let i = 0; i < blocks.length; i++) blocks[i].y = top + blocks[i].line * pitchY;
+                return { blocks: blocks, barH: barH };
+            }
+
+            // Speech to text and LLM: the recording's timeline with scan
+            // lines over it. Ahead of the STT line the recording is a soft
+            // analog envelope; behind it, columns of square cells. Behind
+            // the LLM line those cells fade to a ghost under blocks the
+            // length of the transcript's words.
+            function drawScan(ctx, w, h, t) {
+                const hud = card.hud;
+                const cellW = 5;
+                const colPitch = cellW + 2;
+                const n = Math.max(1, Math.floor((w + 2) / colPitch));
+                const cell = 6;
+                const pitch = cell + 2;
+                const cy = h / 2;
+                const rows = Math.max(1, Math.floor((h / 2 - 2) / pitch));
+                const half = h / 2 - 3;
+                const env = envelope(n);
+                const grow = Math.min(1, (t - hud.workSince) / 220);
+                const x1 = hud.scanP1 * w;
+                const x2 = card.stage === 2 ? hud.scanP2 * w : -1;
+
+                ctx.fillStyle = css(card.cDim);
+                ctx.fillRect(0, Math.round(cy), w, 1);
+
+                // Analog envelope, right of the STT line.
+                if (x1 < w) {
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(x1, 0, w - x1, h);
+                    ctx.clip();
+                    const px = function(i) { return i * colPitch + cellW / 2; };
+                    const amp = function(i) { return Math.max(1, env[i] * half * grow); };
+                    ctx.beginPath();
+                    ctx.moveTo(0, cy);
+                    for (let i = 0; i < n; i++) {
+                        const j = Math.min(n - 1, i + 1);
+                        ctx.quadraticCurveTo(px(i), cy - amp(i), (px(i) + px(j)) / 2, cy - (amp(i) + amp(j)) / 2);
+                    }
+                    ctx.lineTo(w, cy);
+                    for (let i = n - 1; i >= 0; i--) {
+                        const j = Math.max(0, i - 1);
+                        ctx.quadraticCurveTo(px(i), cy + amp(i), (px(i) + px(j)) / 2, cy + (amp(i) + amp(j)) / 2);
+                    }
+                    ctx.closePath();
+                    const grad = ctx.createLinearGradient(0, cy - half, 0, cy + half);
+                    grad.addColorStop(0, css(card.cMid, 0.25));
+                    grad.addColorStop(0.5, css(card.cAccent, 0.45));
+                    grad.addColorStop(1, css(card.cMid, 0.25));
+                    ctx.fillStyle = grad;
+                    ctx.fill();
+                    ctx.lineWidth = 1.2;
+                    ctx.strokeStyle = css(card.cAccent, 0.7);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+
+                // Digital cells, left of the STT line; ghosted behind the
+                // LLM line.
+                for (let i = 0; i < n; i++) {
+                    const x = i * colPitch;
+                    if (x + cellW > x1) break;
+                    const count = Math.max(1, Math.round(env[i] * rows));
+                    const behind2 = x + cellW <= x2;
+                    const near = (x1 - x) / colPitch < 3 && card.stage === 1;
+                    ctx.fillStyle = behind2 ? css(card.cAccent, 0.16)
+                        : near ? css(card.cHot) : css(card.cAccent, 0.85);
+                    for (let j = 0; j < count; j++) {
+                        const off = j * pitch + pitch / 2;
+                        ctx.fillRect(x, cy - off - cell, cellW, cell);
+                        ctx.fillRect(x, cy + off, cellW, cell);
+                    }
+                }
+
+                // Word blocks, left of the LLM line.
+                if (x2 > 0) {
+                    const lens = hud.rawLens;
+                    const lay = wordLayout(lens, w, h);
+                    for (let i = 0; i < lay.blocks.length; i++) {
+                        const b = lay.blocks[i];
+                        if (b.x >= x2) continue;
+                        const bw = Math.min(b.w, x2 - b.x);
+                        ctx.fillStyle = x2 - b.x < 24 ? css(card.cText) : css(card.cHot);
+                        ctx.fillRect(b.x, b.y, bw, lay.barH);
+                    }
+                }
+
+                // Scan lines: a lit lane with a bright edge.
+                const line = function(x, colour) {
+                    ctx.fillStyle = css(card.cAccent, 0.12);
+                    ctx.fillRect(x - 10, 0, 12, h);
+                    ctx.fillStyle = css(colour);
+                    ctx.fillRect(x - 1, 0, 2, h);
+                };
+                if (card.stage === 1 && x1 < w) line(x1, card.cHot);
+                if (x2 >= 0 && x2 < w) line(x2, card.cText);
+            }
+
+            // Output: the words being typed, as blocks. Each word is a run
+            // of square cells as long as the typed word (or a random length
+            // when the post-process script reported none), laid out in lines
+            // behind a block cursor that scrolls the lines up when they
+            // fill. It is paced to end with voxtype's real typing.
+            function drawTyping(ctx, w, h, t) {
+                const hud = card.hud;
+                const cell = 8;
+                const pitch = cell + 3;
+                const lineGap = 8;
+                const linePitch = cell + lineGap;
+                const cols = Math.floor(w / pitch);
+                const visibleLines = Math.max(1, Math.floor((h + lineGap) / linePitch));
+                const lens = hud.ppFresh && hud.outLens.length > 0 ? hud.outLens : null;
+                const words = lens ? lens.length
+                    : Math.max(1, hud.ppFresh && typeof hud.pp.words === "number" ? Math.min(400, hud.pp.words) : 12);
+                const rnd = function(a) {
+                    const x = Math.sin(a * 91.7 + 13.3) * 43758.5453;
+                    return x - Math.floor(x);
+                };
+
+                // Lay the words out into cell positions.
+                const layout = [];
+                let col = 0;
+                let line = 0;
+                for (let i = 0; i < words; i++) {
+                    const len = lens ? Math.max(1, Math.min(cols, Math.round(lens[i] * 0.7)))
+                                     : 2 + Math.floor(rnd(i) * 6);
+                    if (col > 0 && col + len > cols) {
+                        col = 0;
+                        line++;
+                    }
+                    for (let c = 0; c < len; c++) layout.push({ col: col + c, line: line });
+                    col += len + 1;
+                }
+
+                const shown = Math.min(layout.length, Math.floor(hud.typingProgress() * layout.length));
+                const cur = shown < layout.length ? layout[shown]
+                    : { col: Math.min(cols - 1, col), line: line };
+                const firstLine = Math.max(0, cur.line - visibleLines + 1);
+                const usedLines = Math.min(visibleLines, line + 1);
+                const top = Math.round((h - (usedLines * linePitch - lineGap)) / 2);
+
+                for (let k = 0; k < shown; k++) {
+                    const p = layout[k];
+                    if (p.line < firstLine) continue;
+                    const age = shown - k;
+                    ctx.fillStyle = age < 6 ? css(card.cHot) : css(card.cAccent, 0.55 + 0.45 * Math.max(0, 1 - age / 60));
+                    ctx.fillRect(p.col * pitch, top + (p.line - firstLine) * linePitch, cell, cell);
+                }
+
+                // Block cursor: solid while typing, blinking once done.
+                const done = shown >= layout.length;
+                if (!done || Math.floor(t / 450) % 2 === 0) {
+                    ctx.fillStyle = css(card.cHot);
+                    ctx.fillRect(cur.col * pitch, top + (cur.line - firstLine) * linePitch - 2, cell, cell + 4);
+                }
+            }
+
+            onPaint: {
+                const ctx = getContext("2d");
+                ctx.reset();
+                if (!card.hud) return;
+                const t = card.hud.now;
+                if (card.stage === 0) drawSpectrum(ctx, width, height);
+                else if (card.stage <= 2) drawScan(ctx, width, height, t);
+                else drawTyping(ctx, width, height, t);
+            }
+        }
+
+        // Progress, hidden while recording: the current scan's position
+        // while transcribing and refining, full when done.
+        Canvas {
+            id: progress
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 3
+            renderStrategy: Canvas.Cooperative
+
+            onPaint: {
+                const ctx = getContext("2d");
+                ctx.reset();
+                if (!card.hud) return;
+                const hud = card.hud;
+                const w = width;
+                const h = height;
+                const c = function(col, a) {
+                    return "rgba(" + Math.round(col.r * 255) + "," + Math.round(col.g * 255) + ","
+                        + Math.round(col.b * 255) + "," + a + ")";
+                };
+                // No bar while recording, so it doesn't read as a
+                // countdown, until the last seconds before voxtype's cap or
+                // the silence auto-stop, when it drains to zero.
+                if (card.stage === 0) {
+                    const left = hud.stopWarning ? hud.remaining / 10
+                        : hud.silenceWarning ? (hud.silenceStopSecs - hud.silentFor) / 5
+                        : -1;
+                    if (left >= 0) {
+                        ctx.fillStyle = c(card.cDim, 1);
+                        ctx.fillRect(0, 0, w, h);
+                        ctx.fillStyle = c(card.cWarn, 1);
+                        ctx.fillRect(0, 0, Math.max(0, Math.min(1, left)) * w, h);
+                    }
+                    return;
+                }
+                ctx.fillStyle = c(card.cDim, 1);
+                ctx.fillRect(0, 0, w, h);
+
+                const to = Math.min(w, card.stage === 1 ? hud.scanP1 * w
+                    : card.stage === 2 ? hud.scanP2 * w
+                    : w);
+                if (to > 0) {
+                    const g = ctx.createLinearGradient(0, 0, to, 0);
+                    g.addColorStop(0, c(card.cAccent, 1));
+                    g.addColorStop(1, c(card.cHot, 1));
+                    ctx.fillStyle = g;
+                    ctx.fillRect(0, 0, to, h);
+                }
+            }
+        }
+    }
+
+    MultiEffect {
+        source: screen
+        anchors.fill: screen
+        autoPaddingEnabled: true
+        shadowEnabled: true
+        shadowColor: card.cAccent
+        shadowBlur: 0.45
+        shadowOpacity: 0.55
+        shadowHorizontalOffset: 0
+        shadowVerticalOffset: 0
+        blurMax: 20
+    }
+
+    // Faint scanlines.
+    Canvas {
+        anchors.fill: parent
+        anchors.margins: 1
+        opacity: 0.12
+        onPaint: {
+            const ctx = getContext("2d");
+            ctx.reset();
+            ctx.fillStyle = "#000000";
+            for (let y = 0; y < height; y += 3) ctx.fillRect(0, y, width, 1);
+        }
+    }
+
+    // HUD corner brackets, brightening with the voice.
+    Canvas {
+        id: brackets
+        anchors.fill: parent
+        anchors.margins: -5
+        onPaint: {
+            const ctx = getContext("2d");
+            ctx.reset();
+            if (!card.hud) return;
+            const hud = card.hud;
+            const L = 18;
+            const w = width;
+            const h = height;
+            const c = hud.anyWarning ? card.cWarn : card.cAccent;
+            const a = hud.anyWarning ? (Math.floor(hud.now / 400) % 2 ? 1.0 : 0.35)
+                : card.stage === 0 ? 0.5 + 0.5 * Math.min(1, hud.energy * 3) : 0.8;
+            ctx.strokeStyle = "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + ","
+                + Math.round(c.b * 255) + "," + a + ")";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(1, L); ctx.lineTo(1, 1); ctx.lineTo(L, 1);
+            ctx.moveTo(w - L, 1); ctx.lineTo(w - 1, 1); ctx.lineTo(w - 1, L);
+            ctx.moveTo(w - 1, h - L); ctx.lineTo(w - 1, h - 1); ctx.lineTo(w - L, h - 1);
+            ctx.moveTo(L, h - 1); ctx.lineTo(1, h - 1); ctx.lineTo(1, h - L);
+            ctx.stroke();
+        }
+    }
+}

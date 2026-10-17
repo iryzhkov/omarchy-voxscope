@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.iryzhkov.voxscope",
+  "name": "Voxscope",
+  "version": "0.1.0",
+  "author": "Igor Ryzhkov",
+  "license": "MIT",
+  "description": "Dictation HUD for Voxtype: a live microphone spectrum while recording, scan lines over the recording while it is transcribed and cleaned up, and the words typed out, each paced to finish with the real work.",
+  "kinds": [
+    "panel"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "Hud.qml"
+  }
+}
