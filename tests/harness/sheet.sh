@@ -68,7 +68,7 @@ row() {
   for f in "$@"; do
     args+=(-label "$caption  $(basename -- "$f" .png | sed -E 's/^[0-9]+-//')" "$f")
   done
-  magick montage -background '#16161a' -fill '#c8c8d0' -pointsize 18 \
+  magick montage -background '#16161a' -fill '#c8c8d0' -pointsize 30 \
     "${args[@]}" -tile x1 -geometry +10+10 "$dest"
 }
 
@@ -138,7 +138,7 @@ for name in centre bottom; do
   fi
 done
 if ((${#placed[@]} > 0)); then
-  magick montage -background '#16161a' -fill '#c8c8d0' -pointsize 18 \
+  magick montage -background '#16161a' -fill '#c8c8d0' -pointsize 30 \
     "${placed[@]}" -tile x1 -geometry +10+10 "$out/row-placement.png"
   row_files+=("$out/row-placement.png")
 fi
