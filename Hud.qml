@@ -68,10 +68,36 @@ import "postprocess.js" as Postprocess
 Item {
     id: root
 
-    // Injected by omarchy-shell; unused, declared so the shell's injection
-    // has somewhere to land.
+    // Injected by omarchy-shell. The shell carries the user's shell.json,
+    // where the settings below live; the manifest names this plugin.
     property var shell: null
     property var manifest: null
+
+    // Settings, read from this plugin's entry in ~/.config/omarchy/shell.json,
+    // which omarchy-shell leaves alone apart from its `id`:
+    //   { "id": "io.github.iryzhkov.voxscope", "compact": true,
+    //     "position": "bottom", "reducedMotion": true }
+    // Each is whitelisted: anything other than the values below is the
+    // default.
+    readonly property string pluginId: manifest && typeof manifest.id === "string"
+        && /^[A-Za-z0-9_.-]{1,128}$/.test(manifest.id) ? manifest.id : "io.github.iryzhkov.voxscope"
+    readonly property var settings: {
+        const config = shell ? shell.shellConfig : null;
+        const list = config && Array.isArray(config.plugins) ? config.plugins : [];
+        for (let i = 0; i < list.length && i < 1024; i++) {
+            const entry = list[i];
+            if (entry && typeof entry === "object" && !Array.isArray(entry) && entry.id === pluginId)
+                return entry;
+        }
+        return ({});
+    }
+    // The visualisation strip and the stepper, without title and subtitle.
+    readonly property bool compact: settings.compact === true
+    // "center" of the focused screen, or "bottom", centred above its
+    // bottom edge.
+    readonly property string position: settings.position === "bottom" ? "bottom" : "center"
+    // No bloom pulse, scanlines, blinking or scaling; plain fades only.
+    readonly property bool reducedMotion: settings.reducedMotion === true
 
     // External commands. A test harness substitutes harmless fakes.
     // setpriv ties the bridge's life to the shell's, as for cava below.
@@ -304,7 +330,7 @@ Item {
         if (!windowShown) return;
         disappear.stop();
         heldFrame.opacity = 0;
-        heldFrame.scale = 0.96;
+        heldFrame.scale = reducedMotion ? 1 : 0.96;
         appear.restart();
     }
 
@@ -822,11 +848,14 @@ Item {
 
     // The overlay: no keyboard focus, click-through (an empty input mask),
     // ignoring exclusive zones. With no anchors the layer surface is centred
-    // on the output, which is where the prototype drew the card.
+    // on the output, which is where the prototype drew the card; anchored
+    // to the bottom alone it is centred above the bottom edge.
     PanelWindow {
         id: window
         visible: root.windowShown
         screen: root.targetScreen
+        anchors.bottom: root.position === "bottom"
+        margins.bottom: root.position === "bottom" ? 24 : 0
         implicitWidth: Math.ceil(card.implicitWidth) + 80
         implicitHeight: Math.ceil(card.implicitHeight) + 80
         color: "transparent"

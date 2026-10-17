@@ -16,6 +16,11 @@
 // recording, the line after REC drains in the warning colour through the
 // last seconds before an automatic stop.
 //
+// The compact setting drops the title and subtitle (and the lights beside
+// it), leaving the stepper and the visualisation; a countdown then shows
+// in place of the clock. Reduced motion keeps every stage and scan but
+// drops the bloom's pulse with the voice, the scanlines and all blinking.
+//
 // Only the visualisation glows; the text and the stepper stay crisp. The
 // visualisation is drawn on a grid of whole device pixels, and its layer
 // sits on whole device pixels too, so cell edges stay sharp at fractional
@@ -47,8 +52,11 @@ Item {
         return Math.round(v * dpr) / dpr;
     }
 
+    readonly property bool compact: hud.compact
+    readonly property bool calm: hud.reducedMotion
+
     implicitWidth: snap(580)
-    implicitHeight: snap(268)
+    implicitHeight: snap(compact ? 164 : 268)
 
     function mix(a, b, t) {
         return Qt.rgba(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
@@ -192,7 +200,7 @@ Item {
                             : "transparent"
                         border.width: 1
                         border.color: step.index <= card.stage ? card.cAccent : card.cDim
-                        opacity: step.index === card.stage && card.stage < 3
+                        opacity: step.index === card.stage && card.stage < 3 && !card.calm
                             ? 0.55 + 0.45 * Math.abs(Math.sin(card.hud.now / 320)) : 1
                     }
                     Label {
@@ -208,16 +216,23 @@ Item {
             }
         }
 
+        // The clock, or in compact mode, where there is no subtitle, the
+        // countdown before an automatic stop.
         Label {
+            readonly property bool countdownHere: card.compact && card.hud.anyWarning
             anchors.right: parent.right
             anchors.verticalCenter: stepper.verticalCenter
-            text: card.fmtClock(card.stage === 0 ? card.hud.elapsed : card.hud.stageElapsed)
+            text: !countdownHere ? card.fmtClock(card.stage === 0 ? card.hud.elapsed : card.hud.stageElapsed)
+                : card.hud.stopWarning ? "AUTO-STOP " + Math.max(0, Math.ceil(card.hud.remaining)) + "S"
+                : "NO VOICE " + Math.max(0, Math.ceil(card.hud.silenceStopSecs - card.hud.silentFor)) + "S"
             font.pixelSize: 13
-            color: card.hud.stopWarning ? card.cWarn : card.cText
+            font.bold: countdownHere
+            color: card.hud.stopWarning || countdownHere ? card.cWarn : card.cText
         }
 
         Text {
             id: titleText
+            visible: !card.compact
             anchors.left: parent.left
             anchors.top: stepper.bottom
             anchors.topMargin: 14
@@ -232,6 +247,7 @@ Item {
 
         Label {
             id: subtitleText
+            visible: !card.compact
             anchors.left: parent.left
             anchors.top: titleText.bottom
             anchors.topMargin: 2
@@ -243,7 +259,7 @@ Item {
         // Indicator lights while recording: input alive, voice heard (held
         // so it doesn't flicker word to word), and clipping.
         Row {
-            visible: card.stage === 0
+            visible: card.stage === 0 && !card.compact
             anchors.right: parent.right
             anchors.verticalCenter: subtitleText.verticalCenter
             spacing: 14
@@ -287,7 +303,8 @@ Item {
     Item {
         id: glow
         x: card.snap(card.pad)
-        y: card.snap(card.pad + subtitleText.y + subtitleText.height + 12)
+        y: card.snap(card.pad + 12 + (card.compact ? stepper.y + stepper.height
+                                                  : subtitleText.y + subtitleText.height))
         width: card.snap(card.width - 2 * card.pad)
         height: card.snap(card.height - card.pad) - y
         layer.enabled: true
@@ -568,9 +585,10 @@ Item {
                     ctx.fillRect(p.col * pitch, top + (p.line - firstLine) * linePitch, cell, cell);
                 }
 
-                // Block cursor: solid while typing, blinking once done.
+                // Block cursor: solid while typing, blinking once done
+                // unless motion is reduced.
                 const done = shown >= layout.length;
-                if (!done || Math.floor(t / 450) % 2 === 0) {
+                if (!done || card.calm || Math.floor(t / 450) % 2 === 0) {
                     ctx.fillStyle = card.css(card.cHot);
                     ctx.fillRect(cur.col * pitch, top + (cur.line - firstLine) * linePitch - u(2), cell, cell + u(4));
                 }
@@ -604,7 +622,11 @@ Item {
         shadowColor: card.cAccent
         shadowBlur: 0.45
         // A glow on a light card reads as a smudge, so it is fainter.
-        shadowOpacity: card.light ? 0.3 : 0.55
+        // While recording it swells with the voice, unless motion is
+        // reduced.
+        readonly property real pulse: card.stage === 0 && !card.calm
+            ? 0.75 + 0.5 * Math.min(1, card.hud.energy * 2.5) : 1
+        shadowOpacity: (card.light ? 0.3 : 0.55) * pulse
         shadowHorizontalOffset: 0
         shadowVerticalOffset: 0
         blurMax: 20
@@ -615,7 +637,7 @@ Item {
     Canvas {
         anchors.fill: parent
         anchors.margins: card.snap(1)
-        visible: !card.light
+        visible: !card.light && !card.calm
         opacity: 0.12
         onPaint: {
             const ctx = getContext("2d");
@@ -651,7 +673,8 @@ Item {
             const lw = Math.max(1, Math.round(2 * d));
             const o = lw / 2;
             const c = hud.anyWarning ? card.cWarn : card.cAccent;
-            const a = hud.anyWarning ? (Math.floor(hud.now / 400) % 2 ? 1.0 : 0.35)
+            const a = card.calm ? (hud.anyWarning ? 1.0 : 0.8)
+                : hud.anyWarning ? (Math.floor(hud.now / 400) % 2 ? 1.0 : 0.35)
                 : card.stage === 0 ? 0.5 + 0.5 * Math.min(1, hud.energy * 3) : 0.8;
             ctx.strokeStyle = card.css(c, a);
             ctx.lineWidth = lw;

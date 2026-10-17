@@ -68,6 +68,33 @@ The plugin is a `panel` with `keepLoaded`, like Omarchy's own OSD: once
 enabled, the shell loads it at startup and keeps it loaded. It has no key
 binding and nothing to summon; it appears by itself when you dictate.
 
+### Settings
+
+Omarchy keeps plugin settings on the plugin's entry in
+`~/.config/omarchy/shell.json`, the one `omarchy plugin enable` adds to
+`plugins`. Voxscope reads three, all optional:
+
+```json
+{
+  "id": "io.github.iryzhkov.voxscope",
+  "compact": true,
+  "position": "bottom",
+  "reducedMotion": true
+}
+```
+
+- `compact` (`true` or `false`, default `false`): only the stepper and the
+  visualisation, without the title, subtitle and indicator lights. A
+  countdown before an automatic stop shows in place of the clock.
+- `position` (`"center"` or `"bottom"`, default `"center"`): the middle of
+  the focused screen, or centred just above its bottom edge.
+- `reducedMotion` (`true` or `false`, default `false`): every stage and scan
+  is still shown, but without the bloom swelling with your voice, the
+  scanlines, blinking, or the card scaling in; it only fades.
+
+Any other value counts as the default. The shell reloads `shell.json` when
+it changes, so a saved edit applies from the next dictation.
+
 ### Turn off Voxtype's own OSD
 
 Voxtype draws its own on-screen display by default, which would sit on top of
