@@ -18,6 +18,18 @@
 # Output goes to $VOXSCOPE_TEST_DIR/<scenario> (default
 # ~/.cache/voxscope-test/<scenario>): frames/*.png and log.txt.
 #
+# Optional environment:
+#   VOXSCOPE_THEME       a stock Omarchy theme name, such as tokyo-night,
+#                        or the path of a colors.toml; the HUD is coloured
+#                        from it instead of the active theme, which is left
+#                        alone
+#   VOXSCOPE_SETTINGS    a JSON object of plugin settings, as they would
+#                        appear on the plugin's entry in shell.json, for
+#                        example '{"compact": true}'
+#   VOXSCOPE_PLUGIN_DIR  where to take the plugin's files from instead of
+#                        this checkout, for example an export of an older
+#                        commit to compare against
+#
 # The HUD's overlay appears on the focused screen while it runs. It takes
 # no keyboard focus and lets clicks through.
 
@@ -46,10 +58,25 @@ chmod 700 "$run/runtime"
 
 # The plugin and the harness side by side, so the harness can use Hud.qml
 # without importing from outside its own directory.
-cp -- "$repo"/*.qml "$repo"/*.js "$repo/cava.conf" "$run/app/"
+plugin=${VOXSCOPE_PLUGIN_DIR:-$repo}
+cp -- "$plugin"/*.qml "$plugin"/*.js "$plugin/cava.conf" "$run/app/"
 cp -- "$here/shell.qml" "$run/app/shell.qml"
 
 theme=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme/colors.toml
+if [[ -n ${VOXSCOPE_THEME:-} ]]; then
+  if [[ $VOXSCOPE_THEME == */* ]]; then
+    theme=$VOXSCOPE_THEME
+  elif [[ $VOXSCOPE_THEME =~ ^[a-z0-9-]+$ ]]; then
+    theme=/usr/share/omarchy/themes/$VOXSCOPE_THEME/colors.toml
+  else
+    echo "$0: bad theme name: $VOXSCOPE_THEME" >&2
+    exit 2
+  fi
+  if [[ ! -f $theme ]]; then
+    echo "$0: no such theme: $theme" >&2
+    exit 2
+  fi
+fi
 if [[ -f $theme ]]; then
   cp -- "$theme" "$run/state/omarchy/current/theme/colors.toml"
 fi
@@ -83,7 +110,7 @@ status=0
 env "${audio_env[@]}" XDG_RUNTIME_DIR="$run/runtime" WAYLAND_DISPLAY="$wayland" \
   XDG_STATE_HOME="$run/state" XDG_CONFIG_HOME="$run/config" \
   HARNESS_SCENARIO="$scenario" HARNESS_OUT="$run/frames" \
-  HARNESS_BRIDGE="$here/fake-bridge.py" \
+  HARNESS_BRIDGE="$here/fake-bridge.py" HARNESS_SETTINGS="${VOXSCOPE_SETTINGS:-}" \
   timeout 40 quickshell -p "$run/app/shell.qml" >"$run/log.txt" 2>&1 || status=$?
 
 echo "$scenario: exit $status, output in $run"

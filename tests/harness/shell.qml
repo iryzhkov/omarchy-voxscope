@@ -20,6 +20,19 @@ ShellRoot {
     readonly property string out: Quickshell.env("HARNESS_OUT")
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR")
     readonly property string bridge: Quickshell.env("HARNESS_BRIDGE")
+    // Stands in for omarchy-shell, which the HUD reads its settings from:
+    // the plugin's entry in shell.json, here made from HARNESS_SETTINGS.
+    readonly property var fakeShell: {
+        let settings = {};
+        try {
+            const parsed = JSON.parse(Quickshell.env("HARNESS_SETTINGS") || "{}");
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) settings = parsed;
+        } catch (e) {
+            console.log("FAIL HARNESS_SETTINGS is not JSON: " + e);
+        }
+        settings.id = "io.github.iryzhkov.voxscope";
+        return { shellConfig: { version: 1, plugins: [settings] } };
+    }
 
     property real t0: 0
     property int next: 0
@@ -269,6 +282,7 @@ ShellRoot {
 
     Hud {
         id: hud
+        shell: harness.fakeShell
         bridgeCommand: ["/usr/bin/python3", "-I", harness.bridge,
                         harness.scenario === "silence" ? "silent"
                         : harness.scenario === "nobridge" ? "stall" : "speech"]
