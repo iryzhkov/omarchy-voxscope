@@ -28,22 +28,62 @@ one into transcripts.
 
 Wired in via [output.post_process] in ~/.config/voxtype/config.toml; keep
 Voxtype's timeout_ms there above VOXTYPE_CLEAN_TIMEOUT.
+
+Everything read from outside is bounded: the transcript and every Ollama
+answer by a byte cap, the settings by a range or a length, and the one
+program started (curl, to warm the model up) runs from a fixed path with an
+empty environment and a deadline. The status file is written to a fresh
+private temporary file beside it and renamed into place.
 """
 
 import json
+import math
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
-OLLAMA_BASE = os.environ.get("VOXTYPE_CLEAN_BASE", "http://localhost:11434").rstrip("/")
+# Longest transcript accepted on stdin, and longest answer read from Ollama.
+MAX_INPUT_BYTES = 1 << 20
+MAX_RESPONSE_BYTES = 4 << 20
+
+
+def env_base() -> str:
+    """The Ollama URL: http or https, printable, at most 256 characters."""
+    base = os.environ.get("VOXTYPE_CLEAN_BASE", "").strip().rstrip("/")
+    if re.fullmatch(r"https?://[\x21-\x7e]{1,240}", base):
+        return base
+    return "http://localhost:11434"
+
+
+def env_models() -> list[str]:
+    """Candidate models: at most eight names of the usual characters."""
+    raw = os.environ.get("VOXTYPE_CLEAN_MODEL", "qwen3:4b")[:1024]
+    names = [m.strip() for m in raw.split(",")]
+    names = [m for m in names if re.fullmatch(r"[A-Za-z0-9._:/@+-]{1,128}", m)]
+    return names[:8] or ["qwen3:4b"]
+
+
+def env_timeout() -> float:
+    """Seconds to wait for the cleanup, from half a second to a minute."""
+    try:
+        secs = float(os.environ.get("VOXTYPE_CLEAN_TIMEOUT", "5"))
+    except ValueError:
+        return 5.0
+    return min(60.0, max(0.5, secs)) if math.isfinite(secs) else 5.0
+
+
+OLLAMA_BASE = env_base()
 # A comma-separated list is accepted; the first candidate installed wins.
-MODELS = os.environ.get("VOXTYPE_CLEAN_MODEL", "qwen3:4b").split(",")
-TIMEOUT_SECS = float(os.environ.get("VOXTYPE_CLEAN_TIMEOUT", "5"))
+MODELS = env_models()
+TIMEOUT_SECS = env_timeout()
 PS_TIMEOUT_SECS = 1.5
 KEEP_ALIVE = "2h"
+CURL = "/usr/bin/curl"
 
 # Shared core with the phone dictation cleanup prompt: conservative wording
 # rules, never answering the transcript, and Whisper hallucination removal.
@@ -99,11 +139,21 @@ def display_name(model: str) -> str:
     return model[: -len(":latest")] if model.endswith(":latest") else model
 
 
-def ollama_get(path: str):
+def read_bounded(resp) -> bytes:
+    """The whole response body, or ValueError when it is over the cap."""
+    body = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ValueError("response too large")
+    return body
+
+
+def ollama_get(path: str) -> list:
     with urllib.request.urlopen(
         f"{OLLAMA_BASE}{path}", timeout=PS_TIMEOUT_SECS
     ) as resp:
-        return json.loads(resp.read()).get("models", [])
+        reply = json.loads(read_bounded(resp))
+    models = reply.get("models", []) if isinstance(reply, dict) else []
+    return [m for m in models if isinstance(m, dict)] if isinstance(models, list) else []
 
 
 def pick_model() -> tuple[str | None, bool]:
@@ -114,12 +164,14 @@ def pick_model() -> tuple[str | None, bool]:
         running = ollama_get("/api/ps")
     except Exception:
         return None, False
-    wanted = [full_name(m.strip()) for m in MODELS if m.strip()]
+    wanted = [full_name(m) for m in MODELS]
     for name in wanted:
         for m in running:
             if m.get("name") == name:
-                size = m.get("size") or 0
-                if size > 0 and m.get("size_vram", 0) >= 0.9 * size:
+                size = m.get("size")
+                vram = m.get("size_vram")
+                if (isinstance(size, (int, float)) and isinstance(vram, (int, float))
+                        and size > 0 and vram >= 0.9 * size):
                     return name, True
     try:
         installed = {m.get("name") for m in ollama_get("/api/tags")}
@@ -133,16 +185,21 @@ def pick_model() -> tuple[str | None, bool]:
 
 def trigger_load(model: str) -> None:
     """Ask ollama to load `model` without waiting for it. The child curl
-    outlives this script; an empty generate request just loads the model."""
+    outlives this script; an empty generate request just loads the model.
+    It runs from a fixed path, with an empty environment (so no proxy or
+    curlrc of the session applies), ten minutes at most, and reads no
+    config file."""
     payload = json.dumps({"model": model, "keep_alive": KEEP_ALIVE})
     try:
         subprocess.Popen(
             [
-                "curl", "-s", "-o", "/dev/null", "--max-time", "600",
-                "-d", payload, f"{OLLAMA_BASE}/api/generate",
+                CURL, "-q", "-s", "-o", "/dev/null", "--max-time", "600",
+                "-d", payload, "--", f"{OLLAMA_BASE}/api/generate",
             ],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env={},
             start_new_session=True,
         )
     except Exception:
@@ -168,8 +225,10 @@ def llm_clean(text: str, model: str) -> str | None:
     )
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT_SECS) as resp:
-            answer = json.loads(resp.read())["response"]
+            answer = json.loads(read_bounded(resp))["response"]
     except Exception:
+        return None
+    if not isinstance(answer, str):
         return None
 
     # Small models sometimes prepend "Here is the corrected text:" — drop it.
@@ -222,19 +281,34 @@ def report(stage: str, **fields) -> None:
     never reads a half-written file; any failure is ignored."""
     STATUS.update(fields)
     try:
-        runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+        if not (os.path.isabs(runtime) and ".." not in runtime.split("/")):
+            runtime = f"/run/user/{os.getuid()}"
         directory = os.path.join(runtime, "voxtype")
-        os.makedirs(directory, exist_ok=True)
-        tmp = os.path.join(directory, ".postprocess.json.tmp")
-        with open(tmp, "w") as f:
-            json.dump({"stage": stage, "t": time.time() * 1000, **STATUS}, f)
-        os.replace(tmp, os.path.join(directory, "postprocess.json"))
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        # A fresh file only this user can open, never one already there.
+        fd, tmp = tempfile.mkstemp(prefix=".postprocess.", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"stage": stage, "t": time.time() * 1000, **STATUS}, f)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, os.path.join(directory, "postprocess.json"))
+        except BaseException:
+            os.unlink(tmp)
+            raise
     except Exception:
         pass
 
 
 def main() -> None:
-    raw = sys.stdin.read()
+    data = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+    if len(data) > MAX_INPUT_BYTES:
+        # Far longer than any dictation; pass it through untouched, a chunk
+        # at a time, rather than send it anywhere.
+        sys.stdout.buffer.write(data)
+        shutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)
+        return
+    raw = data.decode("utf-8", errors="replace")
     fallback = collapse(raw)
     if not fallback:
         return
