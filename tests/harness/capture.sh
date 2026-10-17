@@ -6,7 +6,7 @@
 # Runs the "demo" scenario of run.sh, coloured from a stock Omarchy theme's
 # colors.toml (the active theme is left alone), which saves the whole
 # overlay window about fifteen times a second on a transparent background,
-# and one "hero" frame in the middle of the LLM scan. Then it composites:
+# and one "hero" frame in the middle of the STT scan. Then it composites:
 #
 #   preview.png  1600x900, the hero frame on one of the theme's own
 #                wallpapers, the card at 58 % of the width, so it still

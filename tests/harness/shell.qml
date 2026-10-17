@@ -369,13 +369,14 @@ ShellRoot {
         ],
         // One unhurried dictation for the publishing assets: a spoken
         // sentence from fake-cava.py, an STT scan long enough to watch, and a "hero"
-        // frame of the window in the middle of the LLM scan.
+        // frame of the window in the middle of the STT scan, where the soft
+        // envelope ahead of the scan line turns into cells behind it.
         demo: [
             [0, "state", "recording"],
             [3000, "state", "transcribing"],
+            [3400, "window", "hero"],
             [3700, "pp", "start"],
             [3740, "pp", "llm"],
-            [4500, "window", "hero"],
             [4900, "pp", "done"],
             [5500, "state", "idle"],
             [7500, "quit", ""]
