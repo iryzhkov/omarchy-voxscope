@@ -22,10 +22,14 @@ ShellRoot {
     readonly property string bridge: Quickshell.env("HARNESS_BRIDGE")
     readonly property bool fakeCava: scenario === "quiet" || scenario === "loud"
     // The spectrum while speech is being fed in by fake-cava.py: the
-    // loudest band level seen, and the largest share of bands at the top
-    // in any one frame.
+    // loudest band level seen, the largest share of bands at the top in any
+    // one frame (overall, and after the first second of speech, by when
+    // the reference has caught up with the speaker), and the share of
+    // band-frames at the top.
     property real speechMaxLevel: 0
     property real speechMaxPinned: 0
+    property real settledMaxPinned: 0
+    property real pinnedSum: 0
     property int speechFrames: 0
     property real hissMaxLevel: 0
     // Stands in for omarchy-shell, which the HUD reads its settings from:
@@ -538,10 +542,12 @@ ShellRoot {
                 + speechMaxLevel.toFixed(3) + ", most bands pinned at once "
                 + (speechMaxPinned * 100).toFixed(0) + " %");
         } else if (what === "loud") {
-            const ok = speechMaxLevel >= 0.6 && speechMaxPinned < 0.5;
+            const mean = speechFrames > 0 ? pinnedSum / speechFrames : 0;
+            const ok = speechMaxLevel >= 0.6 && settledMaxPinned < 0.25 && mean < 0.03;
             console.log((ok ? "CHECK" : "FAIL") + " loud speech is not pinned at the top: loudest band "
                 + speechMaxLevel.toFixed(3) + ", most bands pinned at once "
-                + (speechMaxPinned * 100).toFixed(0) + " %");
+                + (speechMaxPinned * 100).toFixed(0) + " % (" + (settledMaxPinned * 100).toFixed(0)
+                + " % after the first second), bands pinned on average " + (mean * 100).toFixed(1) + " %");
         } else if (what === "cava") {
             const ok = hud.lastCavaMs > 0 && Date.now() - hud.lastCavaMs < 500;
             console.log((ok ? "CHECK" : "FAIL") + " cava spectrum: " + hud.target.length
@@ -577,6 +583,8 @@ ShellRoot {
                     harness.speechFrames++;
                     harness.speechMaxLevel = Math.max(harness.speechMaxLevel, top);
                     harness.speechMaxPinned = Math.max(harness.speechMaxPinned, pinned / hud.level.length);
+                    harness.pinnedSum += pinned / hud.level.length;
+                    if (e > 1600) harness.settledMaxPinned = Math.max(harness.settledMaxPinned, pinned / hud.level.length);
                 }
             }
             if (hud.lingering && harness.lingerStartedAt === null) harness.lingerStartedAt = hud.idleAt;

@@ -35,7 +35,9 @@ def main() -> None:
     while True:
         t = time.monotonic() - start
         speaking = t >= 0.6
-        words = max(0.0, math.sin(t * 5.3)) * max(0.0, math.sin(t * 1.1 + 0.4)) if speaking else 0.0
+        # Four syllables a second, rising and falling within a phrase.
+        syllable = max(0.0, math.sin((t - 0.6) * 2 * math.pi * 4)) ** 0.7
+        words = syllable * (0.55 + 0.45 * math.sin(t * 1.3)) if speaking else 0.0
         # Syllables of different loudness, so peaks vary word to word.
         accent = 0.75 + 0.25 * math.sin(t * 2.3)
         bars = []
