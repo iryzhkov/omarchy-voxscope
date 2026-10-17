@@ -254,21 +254,29 @@ Item {
 
             // The cell grid shared by the live spectrum and the scans:
             // square cells cellW wide and cell tall, colPitch and pitch
-            // apart, mirrored about the midline.
+            // apart, mirrored about the midline. A column of n rows is one
+            // cell centred on the midline with n - 1 above and below it,
+            // so a silent column is the centre cell alone.
             readonly property int cellW: 5
             readonly property int colPitch: cellW + 2
             readonly property int cell: 6
             readonly property int pitch: cell + 2
 
+            // How many rows a column can have in height h, centre included.
             function rowsFor(h) {
-                return Math.max(1, Math.floor((h / 2 - 2) / pitch));
+                return Math.max(1, Math.floor(((h + pitch - cell) / pitch + 1) / 2));
             }
 
-            // Row j of a column at x, above and below the midline cy.
+            // Row j of a column at x: the centre cell for j = 0, otherwise
+            // the pair j rows above and below it.
             function fillCellPair(ctx, x, wd, cy, j) {
-                const off = j * pitch + pitch / 2;
-                ctx.fillRect(x, cy - off - cell, wd, cell);
-                ctx.fillRect(x, cy + off, wd, cell);
+                const top = cy - cell / 2;
+                if (j === 0) {
+                    ctx.fillRect(x, top, wd, cell);
+                    return;
+                }
+                ctx.fillRect(x, top - j * pitch, wd, cell);
+                ctx.fillRect(x, top + j * pitch, wd, cell);
             }
 
             // Recording: the live spectrum in the scans' cells. Each band is
@@ -291,7 +299,7 @@ Item {
                     const x = left + i * (bandW + bandGap);
                     const count = Math.max(1, Math.min(rows, Math.round((hud.level[i] || 0) * rows)));
                     const pk = hud.peak[i] || 0;
-                    // A peak in the first row would only light the resting
+                    // A peak in the centre row would only light the resting
                     // cell, so it is not shown.
                     const pkRow = Math.min(rows, Math.round(pk * rows)) - 1;
                     for (let j = 0; j < Math.max(count, pkRow + 1); j++) {
