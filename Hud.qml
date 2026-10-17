@@ -951,27 +951,35 @@ Item {
         exclusionMode: ExclusionMode.Ignore
         mask: Region {}
 
-        // Centred on whole device pixels, so the card's own snapping holds.
-        Card {
-            id: card
-            hud: root
-            x: card.snap((parent.width - width) / 2)
-            y: card.snap((parent.height - height) / 2)
-            width: implicitWidth
-            height: implicitHeight
-        }
+        // Everything the window shows, in one item a test harness can
+        // capture.
+        Item {
+            id: windowFrame
+            anchors.fill: parent
 
-        // The card is drawn through this texture, which stops updating while
-        // the window is held or fading, so the window keeps the previous
-        // dictation's last frame although the card's bindings already
-        // follow the new one.
-        ShaderEffectSource {
-            id: heldFrame
-            anchors.fill: card
-            sourceItem: card
-            hideSource: true
-            live: !root.holding && !root.fading
-            opacity: 0
+            // Centred on whole device pixels, so the card's own snapping
+            // holds.
+            Card {
+                id: card
+                hud: root
+                x: card.snap((parent.width - width) / 2)
+                y: card.snap((parent.height - height) / 2)
+                width: implicitWidth
+                height: implicitHeight
+            }
+
+            // The card is drawn through this texture, which stops updating
+            // while the window is held or fading, so the window keeps the
+            // previous dictation's last frame although the card's bindings
+            // already follow the new one.
+            ShaderEffectSource {
+                id: heldFrame
+                anchors.fill: card
+                sourceItem: card
+                hideSource: true
+                live: !root.holding && !root.fading
+                opacity: 0
+            }
         }
     }
 
@@ -1003,8 +1011,9 @@ Item {
         onFinished: root.fadeDone()
     }
 
-    // The card, and what the window shows of it, for a test harness to
-    // capture frames from.
+    // The card, what the window shows of it, and the whole window, for a
+    // test harness to capture frames from.
     readonly property Item cardItem: card
     readonly property Item windowItem: heldFrame
+    readonly property Item windowFrameItem: windowFrame
 }

@@ -21,7 +21,12 @@ ShellRoot {
     readonly property string out: Quickshell.env("HARNESS_OUT")
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR")
     readonly property string bridge: Quickshell.env("HARNESS_BRIDGE")
-    readonly property bool fakeCava: scenario === "quiet" || scenario === "loud"
+    readonly property bool fakeCava: scenario === "quiet" || scenario === "loud" || scenario === "demo"
+    // "demo" saves what the overlay window shows, glow and corner brackets
+    // included, every demoFrameMs while it is mapped, for capture.sh.
+    readonly property bool demo: scenario === "demo"
+    readonly property int demoFrameMs: 66
+    property int demoFrames: 0
     // The spectrum while speech is being fed in by fake-cava.py: the
     // loudest band level seen, the largest share of bands at the top in any
     // one frame (overall, and after the first second of speech, by when
@@ -362,6 +367,19 @@ ShellRoot {
             [3600, "state", "idle"],
             [4500, "quit", ""]
         ],
+        // One unhurried dictation for the publishing assets: a spoken
+        // sentence from fake-cava.py, an STT scan long enough to watch, and a "hero"
+        // frame of the window in the middle of the LLM scan.
+        demo: [
+            [0, "state", "recording"],
+            [3000, "state", "transcribing"],
+            [3700, "pp", "start"],
+            [3740, "pp", "llm"],
+            [4500, "window", "hero"],
+            [4900, "pp", "done"],
+            [5500, "state", "idle"],
+            [7500, "quit", ""]
+        ],
         cava: [
             [0, "state", "recording"],
             [1500, "grab", "cava"],
@@ -377,7 +395,7 @@ ShellRoot {
         shell: harness.fakeShell
         bridgeExecutable: "/usr/bin/python3"
         bridgeArgs: ["-I", harness.bridge,
-                     harness.scenario === "silence" || harness.fakeCava ? "silent"
+                     harness.scenario === "silence" || (harness.fakeCava && !harness.demo) ? "silent"
                      : harness.scenario === "nobridge" ? "stall" : "speech"]
         onShownChanged: if (shown) harness.sawShown = true
         // Whether the hold is clean is looked at once the handler that began
@@ -437,7 +455,8 @@ ShellRoot {
         // The HUD clears the environment of everything it runs, so the fake
         // is told its level as an argument.
         cavaExecutable: harness.fakeCava ? "/usr/bin/python3" : "/usr/bin/cava"
-        cavaArgs: harness.fakeCava ? ["-I", Quickshell.env("HARNESS_FAKE_CAVA"), harness.scenario] : []
+        cavaArgs: harness.fakeCava
+            ? ["-I", Quickshell.env("HARNESS_FAKE_CAVA"), harness.scenario] : []
     }
 
     FileView {
@@ -503,6 +522,18 @@ ShellRoot {
         });
     }
 
+    // Saves what the overlay window shows: the card as the window draws it
+    // (heldFrame, with the fades) and everything round it, on a
+    // transparent background.
+    function grabWindow(name) {
+        const e = Date.now() - t0;
+        const file = out + "/" + name.replace("%t", String(e).padStart(5, "0")) + ".png";
+        hud.windowFrameItem.grabToImage(function(r) {
+            r.saveToFile(file);
+            if (name.indexOf("%t") < 0) console.log("FRAME " + file + " at " + e + " ms, stage " + hud.stage);
+        });
+    }
+
     function report(stage, fields) {
         for (const k in fields) status[k] = fields[k];
         const obj = { stage: stage, t: Date.now() };
@@ -542,6 +573,8 @@ ShellRoot {
             }
         } else if (action === "grab") {
             grab(hud.cardItem, arg);
+        } else if (action === "window") {
+            grabWindow(arg);
         } else if (action === "check") {
             check(arg);
         } else if (action === "quit") {
@@ -683,6 +716,15 @@ ShellRoot {
                 console.log("CHECK hidden " + (now - harness.idleWrittenAt) + " ms after idle was written" + since);
             }
             if (harness.idleWrittenAt !== null && hud.windowShown) harness.hiddenLogged = false;
+        }
+    }
+
+    Timer {
+        interval: harness.demoFrameMs
+        repeat: true
+        running: harness.demo && harness.t0 > 0 && hud.windowShown
+        onTriggered: {
+            harness.grabWindow("demo-" + String(harness.demoFrames++).padStart(4, "0") + "-%t");
         }
     }
 

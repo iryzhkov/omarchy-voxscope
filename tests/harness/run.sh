@@ -12,7 +12,8 @@
 # Scenarios (see shell.qml): pipeline, fastidle, relinger, noscript,
 # silence, cap, cava, quiet, loud, suppressed, suppressedrelinger,
 # fadesuppressed, faderecord, oldmarker, latemarker, nobridge, stale,
-# latedir.
+# latedir, and demo, which saves frames of the whole window for
+# capture.sh.
 # "cava" points PipeWire and Pulse at the real session so cava can listen
 # to the default microphone. "quiet" and "loud" feed the spectrum from
 # fake-cava.py instead; "quiet" starts from a saved calibration left high
@@ -40,9 +41,9 @@ set -euo pipefail
 
 scenario=${1:-}
 case $scenario in
-  pipeline | fastidle | relinger | noscript | silence | cap | cava | quiet | loud | suppressed | suppressedrelinger | fadesuppressed | faderecord | oldmarker | latemarker | nobridge | stale | latedir) ;;
+  pipeline | fastidle | relinger | noscript | silence | cap | cava | quiet | loud | suppressed | suppressedrelinger | fadesuppressed | faderecord | oldmarker | latemarker | nobridge | stale | latedir | demo) ;;
   *)
-    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava|quiet|loud|suppressed|suppressedrelinger|fadesuppressed|faderecord|oldmarker|latemarker|nobridge|stale|latedir" >&2
+    echo "usage: $0 pipeline|fastidle|relinger|noscript|silence|cap|cava|quiet|loud|suppressed|suppressedrelinger|fadesuppressed|faderecord|oldmarker|latemarker|nobridge|stale|latedir|demo" >&2
     exit 2
     ;;
 esac
