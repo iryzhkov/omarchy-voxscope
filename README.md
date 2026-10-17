@@ -29,8 +29,12 @@ typing animation is paced to end when Voxtype's real typing does. When Voxtype
 goes idle the card stays a moment longer to finish its animation, never more
 than a second and a half.
 
-The card takes the colours of the active Omarchy theme, never takes keyboard
-focus, and lets clicks through to whatever is underneath.
+The card takes the colours of the active Omarchy theme from its
+`colors.toml`: everything is drawn in the theme's accent, warnings in its
+`red`, the card in `dark_background` and the scan lanes in `selection`, and
+light themes (`mode = "light"`) get stronger tints and no scanlines. The text
+is in the system monospace font, the one `omarchy font set` chooses. The card
+never takes keyboard focus and lets clicks through to whatever is underneath.
 
 While recording it also counts down the last ten seconds before Voxtype's
 recording cap (`audio.max_duration_secs`), and it can stop a recording after

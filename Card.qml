@@ -15,7 +15,11 @@
 // same stages.
 //
 // Colour comes from the active Omarchy theme, which Hud.qml re-reads each
-// time the HUD appears.
+// time the HUD appears. Everything is drawn in the theme's accent, mixed
+// towards the background or the text; light themes mix further, because
+// a pale tint of the accent all but vanishes on a light card. The type is
+// the system monospace font (fontconfig's "monospace", which
+// `omarchy font set` points at the chosen font).
 
 pragma ComponentBehavior: Bound
 
@@ -36,15 +40,21 @@ Item {
                        a.b + (b.b - a.b) * t, 1);
     }
 
-    readonly property color cBg: hud.themeBackground
-    readonly property color cDim: mix(hud.themeBackground, hud.themeAccent, 0.18)
-    readonly property color cMid: mix(hud.themeBackground, hud.themeAccent, 0.55)
+    readonly property bool light: hud.themeLight
+    readonly property color cBg: hud.themeCard
+    readonly property color cDim: mix(cBg, hud.themeAccent, light ? 0.3 : 0.2)
+    readonly property color cMid: mix(cBg, hud.themeAccent, light ? 0.65 : 0.55)
     readonly property color cAccent: hud.themeAccent
-    readonly property color cHot: mix(hud.themeAccent, hud.themeForeground, 0.5)
+    readonly property color cHot: mix(hud.themeAccent, hud.themeForeground, light ? 0.35 : 0.5)
     readonly property color cText: hud.themeForeground
-    readonly property color cMuted: hud.themeMuted
-    readonly property color cWarn: mix(hud.themeAccent, Qt.color("#ff3b30"), 0.7)
-    readonly property string fontFamily: "JetBrainsMono Nerd Font"
+    // Themes' muted colour is meant for borders and is too faint for
+    // labels, more so on light themes.
+    readonly property color cMuted: mix(hud.themeMuted, hud.themeForeground, light ? 0.45 : 0.25)
+    readonly property color cWarn: hud.themeWarn
+    readonly property color cLane: hud.themeSelection
+    // Opacity of the cells left behind the LLM scan.
+    readonly property real ghostAlpha: light ? 0.24 : 0.16
+    readonly property string fontFamily: "monospace"
 
     readonly property int stage: hud.stage
 
@@ -359,6 +369,15 @@ Item {
                 ctx.fillStyle = css(card.cDim);
                 ctx.fillRect(0, Math.round(cy), w, 1);
 
+                // Each scan line trails a lane in the theme's selection
+                // colour, behind what it passes over.
+                const lane = function(x) {
+                    ctx.fillStyle = css(card.cLane, 0.85);
+                    ctx.fillRect(x - 10, 0, 12, h);
+                };
+                if (card.stage === 1 && x1 < w) lane(x1);
+                if (x2 >= 0 && x2 < w) lane(x2);
+
                 // Analog envelope, right of the STT line.
                 if (x1 < w) {
                     ctx.save();
@@ -399,7 +418,7 @@ Item {
                     const count = Math.max(1, Math.round(env[i] * rows));
                     const behind2 = x + cellW <= x2;
                     const near = (x1 - x) / colPitch < 3 && card.stage === 1;
-                    ctx.fillStyle = behind2 ? css(card.cAccent, 0.16)
+                    ctx.fillStyle = behind2 ? css(card.cAccent, card.ghostAlpha)
                         : near ? css(card.cHot) : css(card.cAccent, 0.85);
                     for (let j = 0; j < count; j++) fillCellPair(ctx, x, cellW, cy, j);
                 }
@@ -417,10 +436,8 @@ Item {
                     }
                 }
 
-                // Scan lines: a lit lane with a bright edge.
+                // Scan lines: a bright edge at the front of each lane.
                 const line = function(x, colour) {
-                    ctx.fillStyle = css(card.cAccent, 0.12);
-                    ctx.fillRect(x - 10, 0, 12, h);
                     ctx.fillStyle = css(colour);
                     ctx.fillRect(x - 1, 0, 2, h);
                 };
@@ -558,16 +575,19 @@ Item {
         shadowEnabled: true
         shadowColor: card.cAccent
         shadowBlur: 0.45
-        shadowOpacity: 0.55
+        // A glow on a light card reads as a smudge, so it is fainter.
+        shadowOpacity: card.light ? 0.3 : 0.55
         shadowHorizontalOffset: 0
         shadowVerticalOffset: 0
         blurMax: 20
     }
 
-    // Faint scanlines.
+    // Faint scanlines, on dark themes only: on a light card they read as
+    // grey stripes.
     Canvas {
         anchors.fill: parent
         anchors.margins: 1
+        visible: !card.light
         opacity: 0.12
         onPaint: {
             const ctx = getContext("2d");

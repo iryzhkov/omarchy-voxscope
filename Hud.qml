@@ -42,7 +42,10 @@
 // own directory, which is a git checkout.
 //
 // Colour comes from the active Omarchy theme (colors.toml), re-read each
-// time a dictation starts, so a theme switch shows on the next one.
+// time a dictation starts, so a theme switch shows on the next one. The
+// accent carries the whole visualisation; the theme's red marks warnings,
+// dark_background fills the card and selection lights the scan lanes, and
+// a theme with mode = "light" gets its own mix ratios and no scanlines.
 //
 // Spectrum. Voxtype's audio bridge only carries peak and RMS, so the
 // spectrum comes from cava reading the default PipeWire source while
@@ -86,9 +89,13 @@ Item {
 
     // Theme colours; neutral defaults until colors.toml loads.
     property color themeBackground: "#0b0d12"
+    property color themeCard: "#0b0d12"
     property color themeAccent: "#7aa2f7"
     property color themeForeground: "#d8ddec"
     property color themeMuted: "#5c5e64"
+    property color themeSelection: "#1d2433"
+    property color themeWarn: "#f7768e"
+    property bool themeLight: false
 
     function mix(a, b, t) {
         return Qt.rgba(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
@@ -655,10 +662,18 @@ Item {
             const accent = pick("accent");
             const fg = pick("bright_foreground") || pick("foreground");
             if (bg && accent && fg) {
+                const mode = /^mode\s*=\s*"(light|dark)"/m.exec(t);
+                // Without a mode, a background brighter than the text
+                // makes a light theme.
+                root.themeLight = mode ? mode[1] === "light"
+                    : Qt.color(bg).hslLightness > Qt.color(fg).hslLightness;
                 root.themeBackground = bg;
+                root.themeCard = pick("dark_background") || bg;
                 root.themeAccent = accent;
                 root.themeForeground = fg;
                 root.themeMuted = pick("muted") || root.mix(Qt.color(bg), Qt.color(fg), 0.45);
+                root.themeSelection = pick("selection") || root.mix(Qt.color(bg), Qt.color(accent), 0.2);
+                root.themeWarn = pick("red") || root.mix(Qt.color(accent), Qt.color("#ff3b30"), 0.7);
             }
         }
     }
