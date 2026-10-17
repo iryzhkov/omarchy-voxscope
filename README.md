@@ -1,5 +1,7 @@
 # Voxscope
 
+![Voxscope mid-dictation: the LLM scan turning the recording's cells into word blocks, on Tokyo Night](preview.png)
+
 A dictation HUD for [Voxtype](https://voxtype.io) on Omarchy, built as an
 `omarchy-shell` plugin. It shows the whole dictation pipeline: the live
 microphone spectrum while recording, a scan line over the recording while it
@@ -7,6 +9,8 @@ is transcribed, a second pass while an LLM cleans the text up, and the words
 being typed, each paced to finish with the real work.
 
 ## What it does
+
+![One dictation: recording, speech to text, LLM cleanup and typing](demo.gif)
 
 A themed card appears in the middle of the focused screen while Voxtype is
 recording or transcribing. A stepper across the top (REC, STT, LLM, OUT)
@@ -69,6 +73,16 @@ The plugin is a `panel` with `keepLoaded`, like Omarchy's own OSD: once
 enabled, the shell loads it at startup and keeps it loaded. It has no key
 binding and nothing to summon; it appears by itself when you dictate.
 
+### Updating
+
+`omarchy plugin update` (or a `git pull` in the plugin's directory) replaces
+the files, but the running shell keeps the plugin it has already loaded, so
+the old version stays on screen until the shell restarts:
+
+```
+omarchy restart shell
+```
+
 ### Settings
 
 Omarchy keeps plugin settings on the plugin's entry in
@@ -113,10 +127,12 @@ or, equivalently:
 voxtype config set osd.enabled false
 ```
 
-The setting takes effect when the Voxtype daemon restarts, for example with
-`systemctl --user restart voxtype` if it runs as a user service. With it off,
-Voxtype's OSD frontends exit at launch; the daemon still writes its state
-file and serves its audio socket, which is all Voxscope needs.
+The setting takes effect when the Voxtype daemon restarts: restart it the
+way it was started (Omarchy's Voxtype install runs it as a user service), or
+log out and back in. With it off, Voxtype's OSD frontends exit at launch;
+the daemon still writes its state file and serves its audio socket, which is
+all Voxscope needs. To go back, set it to `true` again and disable the
+plugin.
 
 A recording started with `voxtype record start --no-osd` hides Voxscope too,
 as it does Voxtype's own OSD: for the whole dictation, including the
@@ -139,6 +155,14 @@ of the height without loud speech sitting at the top, while the room's hiss
 stays at the resting centre cell. Each recording starts from what the last
 one learned, capped so that soft speech moves at once; the first syllable
 of loud speech may briefly reach the top while it catches up.
+
+The gain is cava's `sensitivity = 3000` with `autosens` off, in
+[`cava.conf`](cava.conf), whose comments give the measurement it comes
+from: through a MacBook Air microphone at cava's usual sensitivity of 300,
+normal speech peaked at about 40 of cava's 1000 steps and soft speech at
+about 10, too coarse to draw; at 3000 they peak around 250 to 700 and 60 to
+390. A microphone much louder or quieter than that still works, because the
+scaling adapts, but a different gain can be set there.
 
 ### Optional: the post-process script
 
@@ -202,20 +226,56 @@ you.
 ## Files
 
 Voxscope keeps what it learns in `$XDG_STATE_HOME/voxscope/`
-(`~/.local/state/voxscope/`), created on first start: `timing.json` holds the
-learned speeds of speech to text, the LLM and typing, and `calibration.json`
-the spectrum's per-band levels for your microphone and room (`spectrum.js`
-describes them). Deleting them starts the learning over. Nothing is ever written to the plugin's own
-directory.
+(`~/.local/state/voxscope/`), created on first start with mode 700:
+`timing.json` holds the learned speeds of speech to text, the LLM and
+typing, and `calibration.json` the spectrum's per-band levels for your
+microphone and room (`spectrum.js` describes them). Deleting them starts the
+learning over. The generated cava config goes to
+`$XDG_RUNTIME_DIR/voxscope/cava.conf`. Nothing is ever written to the
+plugin's own directory.
+
+## What it runs and reads
+
+Voxscope runs four programs, each by absolute path, with a cleared
+environment (only `PATH=/usr/bin`, `LC_ALL=C`, `HOME`, `XDG_RUNTIME_DIR`, and
+`XDG_CONFIG_HOME`, `PIPEWIRE_RUNTIME_DIR` and `PULSE_SERVER` when the session
+sets them) and a deadline:
+
+- `/usr/bin/voxtype-audio-bridge` and `/usr/bin/cava`, only while it shows a
+  recording, stopped when the recording ends, when the shell exits or dies,
+  and in any case a minute after Voxtype's recording cap;
+- `/usr/bin/pactl get-default-source` once per recording, and
+  `/usr/bin/voxtype record stop` for the silence auto-stop;
+- `/usr/bin/mkdir` once at startup, for the directories above.
+
+It reads Voxtype's state, `osd_suppressed`, `toggle-start` and
+`postprocess.json` in `$XDG_RUNTIME_DIR/voxtype/`, Voxtype's `config.toml`,
+the theme's `colors.toml`, its own two files and its cava template, each
+through a helper that refuses anything but a regular file of yours and stops
+at a byte cap (from 32 bytes for the toggle stamp to 256 KiB for Voxtype's
+configuration). Every value read is range-checked or matched against the
+values it may take before it is used, and nothing it reads is ever run as a
+command. `Helper.js` and `Sanitize.js` hold the details, and the tests check
+them.
 
 ## Development
+
+`scripts/lint` runs qmllint over the QML and checks the syntax of the shell,
+Python and JavaScript files; `scripts/test` runs the unit tests headless
+(Qt Quick Test for the pure JavaScript and `Card.qml`, Node for the command
+lines `Helper.js` builds, executed for real). Both need Qt 6's declarative
+tools and Node; CI runs them on every push
+(`.github/workflows/checks.yml`).
 
 `tests/harness/run.sh <scenario>` runs the HUD in a standalone Quickshell
 against a scratch directory under `~/.cache/voxscope-test/`, plays a scripted
 dictation into it and saves frames of the card; see the script for the
 scenarios, among them `quiet` and `loud`, which feed the spectrum from a fake
-cava. `tests/harness/sheet.sh <dir>` makes a contact sheet of the pipeline
-across stock themes and settings. `timing.js` holds the timing model and
+cava. It needs a running Wayland session, so it is not part of CI.
+`tests/harness/sheet.sh <dir>` makes a contact sheet of the pipeline across
+stock themes and settings, and `tests/harness/capture.sh` remakes
+`preview.png` and `demo.gif` on Tokyo Night and one of its own wallpapers,
+without touching the active theme. `timing.js` holds the timing model and
 `spectrum.js` the spectrum's calibration, both as pure functions.
 
 ## Credits
