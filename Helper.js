@@ -10,6 +10,10 @@
 //   - starts with /usr/bin/env -i, so the child sees only the variables
 //     named here (PATH=/usr/bin, LC_ALL=C and what the caller passes), never
 //     the shell's inherited login environment;
+//   - restores SIGPIPE to its default action (env --default-signal), so a
+//     child whose reader has gone dies at its next write even when the
+//     shell ignores the signal and its children inherit that. A stream's
+//     producer orphaned by a killed wrapper ends this way;
 //   - names every program by a fixed absolute path; the caller's own
 //     executable must be one too (isExecutable);
 //   - runs under GNU timeout, which signals the child's own process group at
@@ -126,7 +130,7 @@ function isArgument(a) {
 // The env -i prefix with the named variables from `vars` that hold a value:
 // a path for the directories, a short printable string for PULSE_SERVER.
 function envPrefix(vars) {
-    var argv = ["/usr/bin/env", "-i", "PATH=/usr/bin", "LC_ALL=C"];
+    var argv = ["/usr/bin/env", "-i", "--default-signal=PIPE", "PATH=/usr/bin", "LC_ALL=C"];
     var v = vars && typeof vars === "object" ? vars : {};
     for (var i = 0; i < ENV_NAMES.length; i++) {
         var name = ENV_NAMES[i];

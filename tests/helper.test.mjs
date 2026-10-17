@@ -8,8 +8,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { chmodSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { basename, dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
@@ -142,6 +144,59 @@ test("a one-shot run is ended by its deadline", () => {
 
 test("a stream is ended by its deadline", () => {
     assert.equal(execute(Helper.stream(["/usr/bin/sleep", "30"], { seconds: 1 })).status, 124);
+});
+
+// The live (not zombie) processes in process group `pgid`.
+function groupMembers(pgid) {
+    const members = [];
+    for (const entry of readdirSync("/proc")) {
+        if (!/^[0-9]+$/.test(entry)) continue;
+        let stat;
+        try {
+            stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+        } catch {
+            continue;
+        }
+        // pid (comm) state ppid pgrp ...; comm may hold spaces and brackets.
+        const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        if (Number(fields[2]) === pgid && fields[0] !== "Z") members.push(Number(entry));
+    }
+    return members;
+}
+
+test("a stream's producer does not outlive a killed wrapper past its next write", async () => {
+    // A producer that writes a line every tenth of a second, run the way the
+    // plugin runs cava, from a parent that ignores SIGPIPE: an ignored
+    // signal is inherited, so without the wrapper restoring it the producer
+    // would see only EPIPE and keep running, holding the microphone. The
+    // writer is a grandchild of timeout, as a producer's helper process
+    // would be: a recent timeout takes its direct child down with it, but
+    // nothing else in the group.
+    const argv = Helper.stream(["/usr/bin/bash", "--norc", "--noprofile", "-c",
+                                "/usr/bin/bash --norc --noprofile -c 'while :; do echo tick; /usr/bin/sleep 0.1; done'; :"],
+                               { seconds: 30 });
+    assert.ok(Array.isArray(argv));
+    const child = spawn("/usr/bin/bash", ["--norc", "--noprofile", "-c", 'trap "" PIPE; exec "$@"', "wrap", ...argv],
+        { stdio: ["ignore", "pipe", "ignore"], env: { PATH: "/usr/bin" } });
+    try {
+        await once(child.stdout, "data");
+        // env and setpriv exec into timeout, which leads its own process
+        // group with the producer in it.
+        const pgid = child.pid;
+        assert.ok(groupMembers(pgid).length >= 2, "the producer is not running in the wrapper's group");
+
+        // The wrapper is killed outright, as the OOM killer would, and the
+        // reader closes its end, as the shell does once its process exits.
+        process.kill(child.pid, "SIGKILL");
+        child.stdout.destroy();
+        const deadline = Date.now() + 3000;
+        while (groupMembers(pgid).length > 0 && Date.now() < deadline) await sleep(50);
+        assert.deepEqual(groupMembers(pgid), [], "the producer outlived its wrapper");
+    } finally {
+        try {
+            process.kill(-child.pid, "SIGKILL");
+        } catch {}
+    }
 });
 
 test("children see only the variables they are given", () => {

@@ -35,8 +35,9 @@ TestCase {
         for (let i = 0; i < cases.length; i++) {
             compare(cases[i][0], "/usr/bin/env");
             compare(cases[i][1], "-i");
-            compare(cases[i][2], "PATH=/usr/bin");
-            compare(cases[i][3], "LC_ALL=C");
+            compare(cases[i][2], "--default-signal=PIPE");
+            compare(cases[i][3], "PATH=/usr/bin");
+            compare(cases[i][4], "LC_ALL=C");
         }
     }
 
