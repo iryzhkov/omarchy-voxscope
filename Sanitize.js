@@ -82,12 +82,32 @@ function toggleStamp(raw) {
     return n > 0 && n <= MAX_EPOCH_MS ? n : 0;
 }
 
-// audio.max_duration_secs from Voxtype's config.toml, clamped to a second
-// up to a day, or null when it is not set.
+// audio.max_duration_secs from Voxtype's config.toml (`voxtype config
+// schema` lists it under [audio]), clamped to a second up to a day, or null
+// when it is not set. Only the key in the [audio] table counts, or the
+// dotted key audio.max_duration_secs before any table; a key of the same
+// name in another table is something else. The last assignment wins.
 function maxRecordSecs(raw) {
     if (typeof raw !== "string") return null;
-    const m = /^max_duration_secs\s*=\s*(\d{1,9})\b/m.exec(raw);
-    return m ? Math.max(1, Math.min(86400, Number(m[1]))) : null;
+    const lines = raw.split("\n");
+    let table = "";
+    let found = null;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        // A table header, [name] or [[name]], with optional spaces and a
+        // trailing comment.
+        const header = /^\[\[?\s*([^\[\]]*?)\s*\]\]?\s*(#.*)?$/.exec(line);
+        if (header) {
+            table = header[1].replace(/\s*\.\s*/g, ".").replace(/"/g, "");
+            continue;
+        }
+        const key = table === "audio" ? "max_duration_secs"
+            : table === "" ? "audio\\s*\\.\\s*max_duration_secs" : null;
+        if (key === null) continue;
+        const m = new RegExp("^" + key + "\\s*=\\s*(\\d{1,9})\\s*(#.*)?$").exec(line);
+        if (m) found = Math.max(1, Math.min(86400, Number(m[1])));
+    }
+    return found;
 }
 
 // The colours Voxscope uses from a theme's colors.toml, each a "#rrggbb"

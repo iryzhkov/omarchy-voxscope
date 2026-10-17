@@ -63,11 +63,21 @@ TestCase {
 
     function test_max_record_secs() {
         compare(Sanitize.maxRecordSecs("[audio]\nmax_duration_secs = 12\n"), 12);
-        compare(Sanitize.maxRecordSecs("max_duration_secs = 0"), 1);
-        compare(Sanitize.maxRecordSecs("max_duration_secs = 999999999"), 86400);
-        compare(Sanitize.maxRecordSecs("max_duration_secs = 9999999999"), null);
-        compare(Sanitize.maxRecordSecs("# max_duration_secs = 5"), null);
+        compare(Sanitize.maxRecordSecs("[audio]\nmax_duration_secs = 0"), 1);
+        compare(Sanitize.maxRecordSecs("[audio]\nmax_duration_secs = 999999999"), 86400);
+        compare(Sanitize.maxRecordSecs("[audio]\nmax_duration_secs = 9999999999"), null);
+        compare(Sanitize.maxRecordSecs("[audio]\n# max_duration_secs = 5"), null);
         compare(Sanitize.maxRecordSecs(""), null);
+        // Only the [audio] table, or the dotted key before any table.
+        compare(Sanitize.maxRecordSecs("max_duration_secs = 7"), null);
+        compare(Sanitize.maxRecordSecs("[whisper]\nmax_duration_secs = 7\n[audio]\ndevice = \"x\"\n"), null);
+        compare(Sanitize.maxRecordSecs("[audio]\nmax_duration_secs = 30\n[output]\nmax_duration_secs = 7\n"), 30);
+        compare(Sanitize.maxRecordSecs("[ audio ] # capture\n  max_duration_secs = 45  # cap\n"), 45);
+        compare(Sanitize.maxRecordSecs("audio.max_duration_secs = 60\n[audio]\n"), 60);
+        compare(Sanitize.maxRecordSecs("[output]\naudio.max_duration_secs = 60\n"), null);
+        compare(Sanitize.maxRecordSecs("[audio.extra]\nmax_duration_secs = 60\n"), null);
+        compare(Sanitize.maxRecordSecs("[[audio]]\nmax_duration_secs = 50\n"), 50);
+        compare(Sanitize.maxRecordSecs("[audio]\r\nmax_duration_secs = 20\r\n"), 20);
     }
 
     function test_theme_colours() {
